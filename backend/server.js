@@ -68,23 +68,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── Rate Limiting (✦ Phase A) ────────────────────────────────────────────────
+// ─── Rate Limiting (✦ Phase A & AI Update) ────────────────────────────────────
 /**
  * authLimiter — applied to /api/auth/* only.
  *
  * Allows 15 requests per 15-minute window per IP.
  * This prevents brute-force attacks on the login and register endpoints.
- *
- * The transaction and budget APIs are NOT rate-limited here because they
- * require a valid JWT (the middleware is already a gate), and users
- * legitimately batch many requests on the dashboard page.
- *
- * express-rate-limit config:
- * windowMs — rolling window duration
- * max      — max requests per window per IP
- * message  — JSON sent when limit is hit (matches our API error shape)
- * standardHeaders — sends RateLimit-* headers (RFC 6585)
- * legacyHeaders   — suppresses old X-RateLimit-* headers
  */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -98,6 +87,22 @@ const authLimiter = rateLimit({
   },
   // Skip rate limiting in test environments
   skip: () => process.env.NODE_ENV === "test",
+});
+
+/**
+ * aiLimiter — applied to /api/transactions/quick-add only.
+ * * Protects the Google Gemini API quota by preventing spam requests.
+ * Allows 10 requests per minute per IP.
+ */
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // 10 AI parses per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many AI requests. Please wait a moment and try again.",
+  },
 });
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
@@ -115,6 +120,9 @@ app.get("/api/health", (req, res) => {
 // Auth routes — rate limited (✦)
 // /api/auth/register, /api/auth/login, /api/auth/me, /api/auth/budget, /api/auth/account
 app.use("/api/auth", authLimiter, authRoutes);
+
+// AI Quick Add route — rate limited to protect Gemini quota
+app.use("/api/transactions/quick-add", aiLimiter);
 
 // Transaction routes — JWT protected inside the router
 // /api/transactions (CRUD + summary + insights + export + titles + monthly)

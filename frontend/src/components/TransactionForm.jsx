@@ -1,32 +1,40 @@
 /**
  * components/TransactionForm.jsx
  *
- * Quick-Add Transaction Form — with 🎤 Voice Dictation
+ * Quick-Add Transaction Form — with 🎤 Voice Dictation + 🤖 AI Quick Add
  *
  * Features:
+ *   - AI Quick Add: type or speak a natural language sentence to auto-fill
+ *     the entire form via the Gemini NLP backend (/api/transactions/quick-add)
+ *   - Web Speech API voice capture for both the AI Quick Add field AND
+ *     the individual Title / Notes fields (graceful degradation if unsupported)
  *   - Controlled form inputs with client-side HTML5 + JS validation
- *   - Web Speech API (window.SpeechRecognition) for voice dictation of
- *     the `title` and `notes` fields
- *   - Graceful degradation — microphone button is hidden if the browser
- *     doesn't support the Speech Recognition API
  *   - Category and Type dropdowns matching the backend Mongoose enums
  *   - Optimistic UI: calls `onSuccess(newTransaction)` so DashboardPage
  *     can update summary state immediately without a page reload
  *
  * MERN Data Flow:
- *   Form submit → axios.post('/api/transactions', payload) → Express controller
- *   → Mongoose Transaction.create() → returns saved doc → onSuccess(doc)
- *   → DashboardPage re-fetches summary to update all stat cards & chart
+ *   AI Quick Add → axios.post('/api/transactions/quick-add', { text })
+ *   → Gemini parses NLP → returns { title, amount, type, category, date }
+ *   → auto-fills form states → user verifies → submit
+ *   → axios.post('/api/transactions', payload) → onSuccess(doc)
  *
- * Voice Dictation Flow:
- *   Mic button click → SpeechRecognition.start() → user speaks
- *   → onresult event → transcript set as field value → recognition.stop()
+ * Voice (AI Quick Add) Flow:
+ *   Mic click → SpeechRecognition.start() → user speaks full sentence
+ *   → transcript → quickAddText state → user clicks "Auto-fill"
+ *   → handleQuickAdd() → Gemini API → form fields populated
+ *
+ * Receipt Scanner (Sprint 3) Flow:
+ *   Camera icon click → hidden <input type="file"> → user picks image
+ *   → handleScanReceipt() → FormData POST to /api/transactions/scan-receipt
+ *   → Gemini Vision OCR → returns { title, amount, type, category, date }
+ *   → auto-fills form states → user verifies → submit
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { useToast } from '../context/ToastContext'; // Phase B
-import{
+import { useToast } from '../context/ToastContext';
+import {
   Mic,
   MicOff,
   PlusCircle,
@@ -39,7 +47,11 @@ import{
   ArrowUpCircle,
   ArrowDownCircle,
   CheckCircle2,
-  Repeat
+  Repeat,
+  Sparkles,
+  Wand2,
+  X,
+  Camera,
 } from 'lucide-react';
 
 // ── Constants matching backend Transaction model enums ─────────────────────────
@@ -56,52 +68,51 @@ const CATEGORIES = [
 
 const RECURRING_FREQUENCIES = ['Daily', 'Weekly', 'Monthly'];
 
-const INITIAL_FORM = {
+// Factory — called fresh on each mount so the default date is never stale
+// (fixes the "INITIAL_FORM computed once at module load" bug: if the app is left
+//  open past midnight the default date would otherwise be yesterday)
+const makeInitialForm = () => ({
   title: '',
   amount: '',
   type: 'Expense',
   category: 'Food & Groceries',
-  date: new Date().toISOString().split('T')[0], // Today's date in YYYY-MM-DD
+  date: new Date().toISOString().split('T')[0],
   notes: '',
-  isRecurring: false,          // Phase D — recurring transaction template
-  recurringFrequency: 'Monthly', // Phase D — Daily | Weekly | Monthly
-};
+  isRecurring: false,
+  recurringFrequency: 'Monthly',
+});
 
 // ── Mic Button Sub-Component ───────────────────────────────────────────────────
 /**
  * Renders an animated microphone button.
- * Shows a pulsing red ring while actively recording.
- *
- * Props:
- *   isListening {boolean}  — Is the recogniser currently active?
- *   onClick     {function} — Toggle start/stop recognition
- *   targetField {string}   — Which field is being dictated ('title' | 'notes')
+ * Shows a pulsing ring while actively recording.
  */
-const MicButton = ({ isListening, onClick, targetField, activeField }) => {
+const MicButton = ({ isListening, onClick, targetField, activeField, size = 'sm' }) => {
   const isActiveForThisField = isListening && activeField === targetField;
+  const dimension = size === 'md' ? 'w-10 h-10' : 'w-9 h-9';
+  const iconSize = size === 'md' ? 16 : 15;
 
   return (
     <button
       type="button"
       onClick={onClick}
-      title={isActiveForThisField ? 'Stop dictation' : `Dictate ${targetField}`}
-      aria-label={isActiveForThisField ? 'Stop voice dictation' : `Start voice dictation for ${targetField}`}
+      title={isActiveForThisField ? 'Stop recording' : `Record ${targetField}`}
+      aria-label={isActiveForThisField ? 'Stop voice recording' : `Start voice recording for ${targetField}`}
       className={[
-        'relative flex-shrink-0 w-9 h-9 rounded-lg flex items-center justify-center',
+        `relative flex-shrink-0 ${dimension} rounded-lg flex items-center justify-center`,
         'transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-1',
         isActiveForThisField
           ? 'bg-rose-500 text-white focus:ring-rose-400 shadow-lg scale-105'
           : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 focus:ring-slate-400',
       ].join(' ')}
     >
-      {/* Pulsing ring animation while listening */}
       {isActiveForThisField && (
         <span className="absolute inset-0 rounded-lg bg-rose-400 animate-ping opacity-30" />
       )}
       {isActiveForThisField ? (
-        <MicOff size={15} className="relative z-10" />
+        <MicOff size={iconSize} className="relative z-10" />
       ) : (
-        <Mic size={15} className="relative z-10" />
+        <Mic size={iconSize} className="relative z-10" />
       )}
     </button>
   );
@@ -125,95 +136,74 @@ const SuccessToast = ({ show }) =>
   ) : null;
 
 // ── Main TransactionForm Component ─────────────────────────────────────────────
-/**
- * Props:
- *   onSuccess {function(newTransaction)} — Called after successful API save
- */
 const TransactionForm = ({ onSuccess }) => {
-  // Phase B — toast replaces inline API error banner for submission errors
   const { toast } = useToast();
+
   // ── Form state ───────────────────────────────────────────────────────────
-  const [form, setForm] = useState(INITIAL_FORM);
+  const [form, setForm] = useState(makeInitialForm);
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  // Phase B: API errors fire as toasts — no longer stored in local state
-  const [micError, setMicError] = useState(''); // kept only for mic permission denials
   const [showSuccess, setShowSuccess] = useState(false);
 
-  // ── Voice Dictation state ────────────────────────────────────────────────
+  // ── AI Quick Add state ────────────────────────────────────────────────────
+  const [quickAddText, setQuickAddText] = useState('');
+  const [isQuickAddLoading, setIsQuickAddLoading] = useState(false);
+  const [quickAddFilled, setQuickAddFilled] = useState(false); // shows confirmation banner
+
+  // ── Receipt Scanner state ─────────────────────────────────────────────────
+  const [isScanLoading, setIsScanLoading]   = useState(false);
+  const receiptInputRef                     = useRef(null);  // hidden <input type="file">
+
+  // ── Voice Dictation state — shared for ALL fields ────────────────────────
+  // activeField can be: 'quickAdd' | 'title' | 'notes' | null
   const [isListening, setIsListening] = useState(false);
-  const [activeField, setActiveField] = useState(null); // 'title' | 'notes'
+  const [activeField, setActiveField] = useState(null);
   const [speechSupported, setSpeechSupported] = useState(false);
   const recognitionRef = useRef(null);
-
-  // ── Check Web Speech API support on mount ────────────────────────────────
-  useEffect(() => {
-    // The Speech Recognition API is vendor-prefixed in some browsers
-    const SpeechRecognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (SpeechRecognition) {
-      setSpeechSupported(true);
-
-      // Initialise the recogniser once and reuse it
-      const recognition = new SpeechRecognition();
-      recognition.continuous = false;    // Stop after first natural pause
-      recognition.interimResults = false; // We only need the final transcript
-      recognition.lang = 'en-IN';        // Indian English — matches ₹ context
-
-      // ── onresult: transcript received ─────────────────────────────────
-      recognition.onresult = (event) => {
-        // Get the most confident transcript from the first result
-        const transcript = Array.from(event.results)
-          .map((result) => result[0].transcript)
-          .join(' ')
-          .trim();
-
-        // Inject transcript into whichever field triggered dictation
-        setForm((prev) => ({
-          ...prev,
-          [activeField]: transcript,
-        }));
-
-        // Clear any existing error for this field
-        setErrors((prev) => ({ ...prev, [activeField]: '' }));
-      };
-
-      // ── onend: recognition stopped (naturally or via .stop()) ─────────
-      recognition.onend = () => {
-        setIsListening(false);
-        setActiveField(null);
-      };
-
-      // ── onerror: microphone permission denied, etc. ────────────────────
-      recognition.onerror = (event) => {
-        console.error('SpeechRecognition error:', event.error);
-        setIsListening(false);
-        setActiveField(null);
-
-        if (event.error === 'not-allowed') {
-          toast.error('Microphone access denied. Please allow microphone permission in your browser.', 'Mic Error');
-        }
-      };
-
-      recognitionRef.current = recognition;
-    }
-
-    // Cleanup: stop recognition if the component unmounts while recording
-    return () => {
-      recognitionRef.current?.abort();
-    };
-  }, []); // Run once on mount
-
-  // ── activeField ref for onresult closure ─────────────────────────────────
-  // We store activeField in a ref so the SpeechRecognition event handler
-  // always reads the current value (closures capture stale state).
   const activeFieldRef = useRef(activeField);
+
+  // Keep ref in sync with state for the onresult closure
   useEffect(() => {
     activeFieldRef.current = activeField;
   }, [activeField]);
 
-  // Patch onresult to use the ref
+  // ── Check Web Speech API support + init recogniser on mount ─────────────
+  useEffect(() => {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) return;
+
+    setSpeechSupported(true);
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-IN';
+
+    recognition.onend = () => {
+      setIsListening(false);
+      setActiveField(null);
+    };
+
+    recognition.onerror = (event) => {
+      console.error('SpeechRecognition error:', event.error);
+      setIsListening(false);
+      setActiveField(null);
+      if (event.error === 'not-allowed') {
+        toast.error(
+          'Microphone access denied. Please allow microphone permission in your browser settings.',
+          'Mic Error',
+        );
+      }
+    };
+
+    recognitionRef.current = recognition;
+
+    return () => recognitionRef.current?.abort();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Patch onresult to always read the current activeField via ref ────────
   useEffect(() => {
     const recognition = recognitionRef.current;
     if (!recognition) return;
@@ -225,48 +215,192 @@ const TransactionForm = ({ onSuccess }) => {
         .trim();
 
       const field = activeFieldRef.current;
-      if (field) {
+      if (!field) return;
+
+      if (field === 'quickAdd') {
+        setQuickAddText(transcript);
+      } else {
         setForm((prev) => ({ ...prev, [field]: transcript }));
         setErrors((prev) => ({ ...prev, [field]: '' }));
       }
     };
-  }, []); // Only once — reads activeFieldRef.current dynamically
+  }, []);
 
-  // ── Toggle Dictation for a specific field ────────────────────────────────
-  const toggleDictation = (fieldName) => {
+  // ── Toggle Dictation for any field ───────────────────────────────────────
+  const toggleDictation = useCallback((fieldName) => {
     const recognition = recognitionRef.current;
     if (!recognition) return;
 
     if (isListening) {
-      // If already listening, stop regardless of which field
       recognition.stop();
       setIsListening(false);
       setActiveField(null);
     } else {
-      // Start dictation for the requested field
       setActiveField(fieldName);
       setIsListening(true);
-      //setApiError('');
-
       try {
         recognition.start();
       } catch (e) {
-        // Catch "recognition already started" edge case
         console.warn('Recognition start error:', e);
         setIsListening(false);
         setActiveField(null);
       }
     }
+  }, [isListening]);
+
+  // ── AI Quick Add handler ──────────────────────────────────────────────────
+  /**
+   * POSTs the natural language text to /api/transactions/quick-add.
+   * On success, auto-fills all form fields and shows a verification toast.
+   */
+  const handleQuickAdd = async () => {
+    // Stop any active dictation before sending
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      setActiveField(null);
+    }
+
+    if (!quickAddText.trim()) {
+      toast.error('Please type or speak a sentence describing your transaction.', 'AI Quick Add');
+      return;
+    }
+
+    setIsQuickAddLoading(true);
+    setQuickAddFilled(false);
+
+    try {
+      const { data } = await axios.post('/api/transactions/quick-add', {
+        text: quickAddText.trim(),
+      });
+
+      if (data.success && data.data) {
+        const { title, amount, type, category, date } = data.data;
+
+        // Auto-fill the form — only overwrite fields the AI returned confidently
+        setForm((prev) => ({
+          ...prev,
+          ...(title    ? { title }    : {}),
+          ...(amount   ? { amount: String(amount) } : {}),
+          ...(type     ? { type }     : {}),
+          ...(category ? { category } : {}),
+          ...(date     ? { date }     : {}),
+        }));
+
+        // Clear any existing validation errors since fields are now populated
+        setErrors({});
+
+        // Show the inline confirmation banner
+        setQuickAddFilled(true);
+
+        // Fire a persistent toast prompting the user to verify
+        toast.success(
+          'Form auto-filled! Please review the fields below, then click "Add Transaction" to save.',
+          '🤖 AI Quick Add',
+        );
+      }
+    } catch (err) {
+      const msg =
+        err?.response?.data?.message ||
+        'AI parsing failed. Try rephrasing your sentence or fill the form manually.';
+      toast.error(msg, 'AI Quick Add Failed');
+    } finally {
+      setIsQuickAddLoading(false);
+    }
   };
 
-  // ── Field change handler ─────────────────────────────────────────────────
+  // ── Receipt Scanner handler ──────────────────────────────────────────────
+  /**
+   * Called when the user picks an image from the hidden file input.
+   * Builds a FormData payload (key: "receiptImage") and POSTs it to
+   * /api/transactions/scan-receipt. On success, auto-fills all form fields
+   * exactly like handleQuickAdd does, then shows the verification banner.
+   */
+  const handleScanReceipt = async (e) => {
+    const file = e.target.files?.[0];
+    // Reset the input so the same file can be re-selected if the user wants to retry
+    e.target.value = '';
+
+    if (!file) return;
+
+    // Client-side size guard (5 MB matches the multer limit on the server)
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('Image must be under 5 MB. Please choose a smaller file.', 'Receipt Scanner');
+      return;
+    }
+
+    // Stop any active voice dictation before scanning
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      setActiveField(null);
+    }
+
+    setIsScanLoading(true);
+    setQuickAddFilled(false);
+
+    try {
+      const formData = new FormData();
+      formData.append('receiptImage', file);
+
+      // axios automatically sets the correct multipart/form-data Content-Type
+      // (including the boundary) when the body is a FormData instance.
+      // The JWT auth header is already attached globally via axios defaults
+      // set in AuthContext — no manual header needed here.
+      const { data } = await axios.post('/api/transactions/scan-receipt', formData);
+
+      if (data.success && data.data) {
+        const { title, amount, type, category, date } = data.data;
+
+        // Auto-fill only fields the AI returned confidently (same pattern as handleQuickAdd)
+        setForm((prev) => ({
+          ...prev,
+          ...(title    ? { title }               : {}),
+          ...(amount   ? { amount: String(amount) } : {}),
+          ...(type     ? { type }                : {}),
+          ...(category ? { category }            : {}),
+          ...(date     ? { date }                : {}),
+        }));
+
+        setErrors({});
+        setQuickAddFilled(true);
+
+        // The backend sends a specific message when amount is missing (blurry receipt)
+        const msg = data.message?.includes('manually')
+          ? data.message
+          : 'Receipt scanned! Please review the fields, then click "Add Transaction" to save.';
+
+        toast.success(msg, '📸 Receipt Scanner');
+      }
+    } catch (err) {
+      const msg =
+        err?.response?.data?.message ||
+        'Could not read this receipt. Try a clearer, well-lit photo.';
+      toast.error(msg, 'Receipt Scanner Failed');
+    } finally {
+      setIsScanLoading(false);
+    }
+  };
+
+  // Allow pressing Enter inside the quick-add input to trigger auto-fill
+  const handleQuickAddKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleQuickAdd();
+    }
+  };
+
+  // Clear the quick-add bar and its confirmation state
+  const clearQuickAdd = () => {
+    setQuickAddText('');
+    setQuickAddFilled(false);
+  };
+
+  // ── Field change handler ──────────────────────────────────────────────────
   const handleChange = (e) => {
     const { name, value } = e.target;
     setForm((prev) => ({ ...prev, [name]: value }));
-    // Clear error on change
-    if (errors[name]) {
-      setErrors((prev) => ({ ...prev, [name]: '' }));
-    }
+    if (errors[name]) setErrors((prev) => ({ ...prev, [name]: '' }));
   };
 
   // ── Client-side validation ────────────────────────────────────────────────
@@ -285,22 +419,16 @@ const TransactionForm = ({ onSuccess }) => {
       newErrors.amount = 'Amount must be at least ₹1.';
     }
 
-    if (!form.category) {
-      newErrors.category = 'Please select a category.';
-    }
-
-    if (!form.date) {
-      newErrors.date = 'Date is required.';
-    }
+    if (!form.category) newErrors.category = 'Please select a category.';
+    if (!form.date)     newErrors.date     = 'Date is required.';
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  // ── Form submission ────────────────────────────────────────────────────────
+  // ── Form submission ───────────────────────────────────────────────────────
   const handleSubmit = async (e) => {
     e.preventDefault();
-    // Stop dictation if active when user submits
     if (isListening) {
       recognitionRef.current?.stop();
       setIsListening(false);
@@ -311,7 +439,6 @@ const TransactionForm = ({ onSuccess }) => {
     setIsSubmitting(true);
 
     try {
-      // POST to /api/transactions — Axios Authorization header is set globally in AuthContext
       const { data } = await axios.post('/api/transactions', {
         title:              form.title.trim(),
         amount:             Number(form.amount),
@@ -319,29 +446,26 @@ const TransactionForm = ({ onSuccess }) => {
         category:           form.category,
         date:               form.date,
         notes:              form.notes.trim(),
-        isRecurring:        form.isRecurring,              // Phase D
-        recurringFrequency: form.isRecurring               // Phase D
-          ? form.recurringFrequency
-          : undefined,
+        isRecurring:        form.isRecurring,
+        recurringFrequency: form.isRecurring ? form.recurringFrequency : undefined,
       });
 
       if (data.success) {
-        // Notify parent so it can refresh the summary data
         onSuccess?.(data.data);
 
-        // Show inline success confirmation
         setShowSuccess(true);
         setTimeout(() => setShowSuccess(false), 2500);
 
-        // Reset form to initial state
-        setForm(INITIAL_FORM);
+        // Reset everything including the quick-add bar
+        setForm(makeInitialForm());
         setErrors({});
+        setQuickAddText('');
+        setQuickAddFilled(false);
       }
     } catch (err) {
-      // Phase B — toast replaces inline API error banner
       toast.error(
         err?.response?.data?.message || 'Failed to save transaction. Please try again.',
-        'Save Failed'
+        'Save Failed',
       );
     } finally {
       setIsSubmitting(false);
@@ -350,9 +474,181 @@ const TransactionForm = ({ onSuccess }) => {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    // <article> for a self-contained interactive widget per HTML5 spec
     <article aria-label="Add new transaction form">
       <form onSubmit={handleSubmit} noValidate className="space-y-4">
+
+        {/* ════════════════════════════════════════════════════════════════
+            AI QUICK ADD SECTION
+            ════════════════════════════════════════════════════════════════ */}
+        <div className="rounded-2xl border border-indigo-200 dark:border-indigo-800/60 bg-gradient-to-br from-indigo-50 to-slate-50 dark:from-indigo-950/30 dark:to-slate-900/40 p-4 space-y-3">
+          {/* Header row */}
+          <div className="flex items-center gap-2">
+            <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-indigo-100 dark:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 flex-shrink-0">
+              <Sparkles size={14} />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-indigo-700 dark:text-indigo-300 leading-tight">
+                AI Quick Add
+              </p>
+              <p className="text-[10px] text-indigo-500 dark:text-indigo-400 leading-tight mt-0.5">
+                Speak, type, or scan a receipt — AI fills the form instantly
+              </p>
+            </div>
+            {/* Listening indicator badge */}
+            {isListening && activeField === 'quickAdd' && (
+              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-700/50 rounded-full px-2 py-0.5 animate-pulse">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
+                Listening…
+              </span>
+            )}
+          </div>
+
+          {/* Input row */}
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                id="quickAddText"
+                type="text"
+                value={quickAddText}
+                onChange={(e) => {
+                  setQuickAddText(e.target.value);
+                  if (quickAddFilled) setQuickAddFilled(false);
+                }}
+                onKeyDown={handleQuickAddKeyDown}
+                placeholder={
+                  isListening && activeField === 'quickAdd'
+                    ? '🎤 Listening… speak your transaction'
+                    : 'e.g. "Paid ₹1200 for groceries at Spar today"'
+                }
+                disabled={isQuickAddLoading}
+                maxLength={500}
+                aria-label="Describe your transaction in plain English"
+                className={[
+                  'input-field w-full pr-8 text-sm',
+                  'bg-white dark:bg-slate-800',
+                  'border-indigo-200 dark:border-indigo-700/60',
+                  'focus:ring-indigo-400 focus:border-indigo-400',
+                  isQuickAddLoading ? 'opacity-60 cursor-not-allowed' : '',
+                ].join(' ')}
+              />
+              {/* Clear button — appears when there's text and AI isn't running */}
+              {quickAddText && !isQuickAddLoading && (
+                <button
+                  type="button"
+                  onClick={clearQuickAdd}
+                  aria-label="Clear AI Quick Add input"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* Microphone button — only shown when Speech API is available */}
+            {speechSupported && (
+              <MicButton
+                isListening={isListening}
+                onClick={() => toggleDictation('quickAdd')}
+                targetField="quickAdd"
+                activeField={activeField}
+                size="md"
+              />
+            )}
+
+            {/* ── Receipt Scanner: hidden file input + Camera trigger button ── */}
+            {/* The input is visually hidden; the Camera button acts as its label */}
+            <input
+              ref={receiptInputRef}
+              type="file"
+              accept="image/jpeg,image/jpg,image/png,image/webp"
+              onChange={handleScanReceipt}
+              className="sr-only"
+              aria-hidden="true"
+              tabIndex={-1}
+            />
+            <button
+              type="button"
+              onClick={() => receiptInputRef.current?.click()}
+              disabled={isScanLoading || isQuickAddLoading}
+              title="Scan a receipt"
+              aria-label="Scan a receipt image to auto-fill the form"
+              className={[
+                'relative flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center',
+                'transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-1',
+                isScanLoading
+                  ? 'bg-violet-500 text-white focus:ring-violet-400 shadow-lg'
+                  : isQuickAddLoading
+                  ? 'bg-slate-100 dark:bg-slate-700 text-slate-300 dark:text-slate-600 cursor-not-allowed'
+                  : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-violet-100 dark:hover:bg-violet-900/40 hover:text-violet-600 dark:hover:text-violet-400 focus:ring-violet-400',
+              ].join(' ')}
+            >
+              {isScanLoading ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <Camera size={16} />
+              )}
+            </button>
+
+            {/* Auto-fill button */}
+            <button
+              type="button"
+              onClick={handleQuickAdd}
+              disabled={isQuickAddLoading || isScanLoading || !quickAddText.trim()}
+              aria-label="Auto-fill form using AI"
+              className={[
+                'flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-semibold',
+                'transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-1',
+                'flex-shrink-0',
+                isQuickAddLoading || isScanLoading || !quickAddText.trim()
+                  ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700'
+                  : 'bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white shadow-sm shadow-indigo-200 dark:shadow-indigo-900 focus:ring-indigo-400 border border-transparent',
+              ].join(' ')}
+            >
+              {isQuickAddLoading ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" />
+                  <span className="hidden sm:inline">Parsing…</span>
+                </>
+              ) : (
+                <>
+                  <Wand2 size={14} />
+                  <span className="hidden sm:inline">Auto-fill</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Success confirmation banner — shown after AI fills the form */}
+          {quickAddFilled && !isQuickAddLoading && (
+            <div
+              role="status"
+              className="flex items-start gap-2 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700/50 px-3 py-2.5 animate-slide-down"
+            >
+              <CheckCircle2 size={14} className="text-emerald-500 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-emerald-700 dark:text-emerald-300 font-medium leading-snug">
+                Fields auto-filled below.{' '}
+                <strong className="font-bold">Review each field</strong> before clicking "Add Transaction".
+              </p>
+            </div>
+          )}
+
+          {/* Hint: voice not supported */}
+          {!speechSupported && (
+            <p className="flex items-center gap-1.5 text-[10px] text-indigo-400 dark:text-indigo-500">
+              <MicOff size={11} />
+              Voice input requires Chrome or Edge — you can still type your sentence above.
+            </p>
+          )}
+        </div>
+
+        {/* ── Visual divider between AI section and manual form ─────────── */}
+        <div className="flex items-center gap-3" aria-hidden="true">
+          <span className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+          <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+            or fill manually
+          </span>
+          <span className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+        </div>
 
         {/* ── Type Toggle: Income / Expense ─────────────────────────────── */}
         <div>
@@ -377,11 +673,7 @@ const TransactionForm = ({ onSuccess }) => {
                   ].join(' ')}
                   aria-pressed={isSelected}
                 >
-                  {isIncome ? (
-                    <ArrowUpCircle size={15} />
-                  ) : (
-                    <ArrowDownCircle size={15} />
-                  )}
+                  {isIncome ? <ArrowUpCircle size={15} /> : <ArrowDownCircle size={15} />}
                   {t}
                 </button>
               );
@@ -419,7 +711,6 @@ const TransactionForm = ({ onSuccess }) => {
               aria-describedby={errors.title ? 'title-error' : undefined}
               aria-invalid={!!errors.title}
             />
-            {/* Mic button — only shown if Speech API is available */}
             {speechSupported && (
               <MicButton
                 isListening={isListening}
@@ -539,12 +830,11 @@ const TransactionForm = ({ onSuccess }) => {
           </div>
         </div>
 
-        {/* ── Recurring toggle (Phase D) ────────────────────────────────── */}
+        {/* ── Recurring toggle ──────────────────────────────────────────── */}
         <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
-          {/* Toggle header */}
           <button
             type="button"
-            onClick={() => setForm(prev => ({ ...prev, isRecurring: !prev.isRecurring }))}
+            onClick={() => setForm((prev) => ({ ...prev, isRecurring: !prev.isRecurring }))}
             className="w-full flex items-center justify-between px-4 py-3
                        bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100
                        dark:hover:bg-slate-700/60 transition-colors duration-150
@@ -553,10 +843,13 @@ const TransactionForm = ({ onSuccess }) => {
             aria-expanded={form.isRecurring}
           >
             <span className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
-              <Repeat size={14} className={form.isRecurring ? 'text-emerald-500' : 'text-slate-400'} aria-hidden="true" />
+              <Repeat
+                size={14}
+                className={form.isRecurring ? 'text-emerald-500' : 'text-slate-400'}
+                aria-hidden="true"
+              />
               Recurring transaction
             </span>
-            {/* Pill toggle */}
             <span
               className={[
                 'relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200',
@@ -564,23 +857,24 @@ const TransactionForm = ({ onSuccess }) => {
               ].join(' ')}
               aria-hidden="true"
             >
-              <span className={[
-                'inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform duration-200',
-                form.isRecurring ? 'translate-x-4' : 'translate-x-0.5',
-              ].join(' ')} />
+              <span
+                className={[
+                  'inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform duration-200',
+                  form.isRecurring ? 'translate-x-4' : 'translate-x-0.5',
+                ].join(' ')}
+              />
             </span>
           </button>
 
-          {/* Frequency selector — shown only when isRecurring is true */}
           {form.isRecurring && (
             <div className="px-4 py-3 bg-emerald-50/50 dark:bg-emerald-900/10 border-t border-slate-200 dark:border-slate-700 animate-slide-down">
               <label className="form-label">Repeat frequency</label>
               <div className="flex gap-2 mt-1">
-                {RECURRING_FREQUENCIES.map(freq => (
+                {RECURRING_FREQUENCIES.map((freq) => (
                   <button
                     key={freq}
                     type="button"
-                    onClick={() => setForm(prev => ({ ...prev, recurringFrequency: freq }))}
+                    onClick={() => setForm((prev) => ({ ...prev, recurringFrequency: freq }))}
                     className={[
                       'flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold transition-all duration-150',
                       'border focus:outline-none focus:ring-2 focus:ring-emerald-400',
@@ -595,7 +889,7 @@ const TransactionForm = ({ onSuccess }) => {
                 ))}
               </div>
               <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-2 font-medium">
-                🔄 The cron scheduler will auto-generate copies of this transaction at midnight IST.
+                🔄 The cron scheduler will auto-generate copies at midnight IST.
               </p>
             </div>
           )}
@@ -604,7 +898,6 @@ const TransactionForm = ({ onSuccess }) => {
         {/* ── Submit row ────────────────────────────────────────────────── */}
         <div className="flex items-center justify-between pt-1">
           <SuccessToast show={showSuccess} />
-
           <button
             type="submit"
             disabled={isSubmitting}
@@ -625,25 +918,24 @@ const TransactionForm = ({ onSuccess }) => {
         </div>
       </form>
 
-      {/* ── Voice Dictation Status Bar ────────────────────────────────────── */}
+      {/* ── Voice Dictation Status Bar (shown for ANY active field) ─────── */}
       {isListening && (
         <div className="mt-3 flex items-center gap-2 px-3 py-2 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-700/50 rounded-xl animate-slide-down">
-          {/* Animated sound wave dots */}
           <div className="flex items-end gap-0.5 h-4" aria-hidden="true">
             {[0, 100, 200, 100, 0].map((delay, i) => (
               <span
                 key={i}
                 className="w-1 bg-rose-500 rounded-full animate-pulse"
-                style={{
-                  height: `${8 + (i % 3) * 4}px`,
-                  animationDelay: `${delay}ms`,
-                }}
+                style={{ height: `${8 + (i % 3) * 4}px`, animationDelay: `${delay}ms` }}
               />
             ))}
           </div>
           <span className="text-xs font-semibold text-rose-600 dark:text-rose-400">
             Listening to{' '}
-            <strong className="font-bold capitalize">{activeField}</strong>… speak now
+            <strong className="font-bold capitalize">
+              {activeField === 'quickAdd' ? 'AI Quick Add' : activeField}
+            </strong>
+            … speak now
           </span>
           <button
             type="button"

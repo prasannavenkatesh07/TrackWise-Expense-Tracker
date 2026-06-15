@@ -2,21 +2,21 @@
  * pages/HistoryPage.jsx  (Phase D — date range filter added)
  *
  * Layout:
- *   Page header + Add button
- *   Summary pills (income / expense totals)
- *   Date range filter row  ✦ Phase D
- *   TransactionTable (search, autocomplete, filter, edit, delete, export, pagination)
- *   Quick-Add slide panel
+ * Page header + Add button
+ * Summary pills (income / expense totals)
+ * Date range filter row  ✦ Phase D
+ * TransactionTable (search, autocomplete, filter, edit, delete, export, pagination)
+ * Quick-Add slide panel
  *
  * Phase D additions:
- *   ✦ `from` / `to` date pickers that pass down to TransactionTable as props.
- *      TransactionTable appends them to GET /api/transactions?from=&to=
- *   ✦ "This Month" and "Clear" shortcuts for the date range
+ * ✦ `from` / `to` date pickers that pass down to TransactionTable as props.
+ * TransactionTable appends them to GET /api/transactions?from=&to=
+ * ✦ "This Month" and "Clear" shortcuts for the date range
  *
  * MERN Data Flow:
- *   HistoryPage owns `from`/`to` state → passes to <TransactionTable />
- *   TransactionTable builds URLSearchParams with from/to → Express controller
- *   → Mongoose filter.date.$gte / $lte → MongoDB → JSON → React rows
+ * HistoryPage owns `from`/`to` state → passes to <TransactionTable />
+ * TransactionTable builds URLSearchParams with from/to → Express controller
+ * → Mongoose filter.date.$gte / $lte → MongoDB → JSON → React rows
  */
 
 import { useState, useEffect } from 'react';
@@ -150,7 +150,8 @@ const HistoryPage = () => {
       <section aria-label="Period summary" className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
         <StatPill
           label="Total Transactions"
-          value={(summary?.totalIncome > 0 || summary?.totalExpense > 0) ? '—' : '0'}
+          // FIX: Swapped placeholder logic for real summary data
+          value={summary?.totalTransactions ? summary.totalTransactions.toLocaleString('en-IN') : '0'}
           icon={Activity}
           colorClass="bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400"
           isLoading={summaryLoading}
@@ -233,8 +234,8 @@ const HistoryPage = () => {
       <section className="page-section" aria-label="Transaction list">
         {/*
          * ✦ Phase D: `from` and `to` props passed here.
-         *   TransactionTable appends them to the GET /api/transactions query string.
-         *   The backend controller filters by date.$gte / $lte in MongoDB.
+         * TransactionTable appends them to the GET /api/transactions query string.
+         * The backend controller filters by date.$gte / $lte in MongoDB.
          */}
         <TransactionTable
           refreshTrigger={refreshKey}

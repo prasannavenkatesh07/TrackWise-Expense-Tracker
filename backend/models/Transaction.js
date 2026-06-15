@@ -3,18 +3,18 @@
  *
  * Mongoose Schema for the Transaction entity.
  * Extended in Phase A with:
- *   - isRecurring + recurringFrequency fields (for the cron scheduler)
- *   - lastGeneratedAt  (tracks when the cron last spawned a copy)
- *   - getMonthlyTrend() static  (for the Reports page line/bar chart)
- *   - getTitleSuggestions() static (for the search autocomplete endpoint)
- *   - Updated getSummaryForUser() to support optional date range filtering
+ * - isRecurring + recurringFrequency fields (for the cron scheduler)
+ * - lastGeneratedAt  (tracks when the cron last spawned a copy)
+ * - getMonthlyTrend() static  (for the Reports page line/bar chart)
+ * - getTitleSuggestions() static (for the search autocomplete endpoint)
+ * - Updated getSummaryForUser() to support optional date range filtering
  *
  * MERN Data Flow note:
- *   React's TransactionForm POSTs to /api/transactions.
- *   The TransactionController creates a new Transaction document
- *   linked to the authenticated user via `user_id` (populated from JWT).
- *   The saved document is returned as JSON, and React updates its
- *   local state — no full page reload required.
+ * React's TransactionForm POSTs to /api/transactions.
+ * The TransactionController creates a new Transaction document
+ * linked to the authenticated user via `user_id` (populated from JWT).
+ * The saved document is returned as JSON, and React updates its
+ * local state — no full page reload required.
  */
 
 const mongoose = require("mongoose");
@@ -181,14 +181,27 @@ TransactionSchema.statics.getSummaryForUser = async function (
 
   const result = await this.aggregate([
     { $match: matchStage },
-    { $group: { _id: "$type", total: { $sum: "$amount" } } },
+    { 
+      $group: { 
+        _id: "$type", 
+        total: { $sum: "$amount" }, 
+        // FIX: Tell MongoDB to also count the number of documents
+        count: { $sum: 1 } 
+      } 
+    },
   ]);
 
-  const summary = { totalIncome: 0, totalExpense: 0 };
+  // FIX: Initialize totalTransactions
+  const summary = { totalIncome: 0, totalExpense: 0, totalTransactions: 0 };
+  
   result.forEach((item) => {
     if (item._id === "Income") summary.totalIncome = item.total;
     if (item._id === "Expense") summary.totalExpense = item.total;
+    
+    // Add the grouped counts together
+    summary.totalTransactions += item.count;
   });
+  
   summary.balance = summary.totalIncome - summary.totalExpense;
   return summary;
 };
@@ -235,13 +248,6 @@ TransactionSchema.statics.getCategoryBreakdownForUser = async function (
  * @param {ObjectId} userId
  * @param {number}  [months=6] — How many past months to include
  * @returns {Promise<Array<{ month: string, income: number, expense: number }>>}
- *
- * Example return:
- *   [
- *     { month: 'Jan 2025', income: 75000, expense: 42000 },
- *     { month: 'Feb 2025', income: 75000, expense: 38000 },
- *     ...
- *   ]
  */
 TransactionSchema.statics.getMonthlyTrend = async function (
   userId,
@@ -288,18 +294,8 @@ TransactionSchema.statics.getMonthlyTrend = async function (
 
   // Format the month label for the chart axis (e.g., "Jan 2025")
   const monthNames = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
   ];
   return result.map((r) => ({
     month: `${monthNames[r._id.month - 1]} ${r._id.year}`,

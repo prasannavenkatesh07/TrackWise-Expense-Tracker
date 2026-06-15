@@ -1,17 +1,18 @@
 /**
  * routes/transactions.js
  *
- * Transaction Routes — Extended in Phase A
+ * Transaction Routes — Extended in Phase A + AI Quick Add
  * Mounted at: /api/transactions  (see server.js)
  *
  * ALL routes require JWT authentication via router.use(protect).
  *
- * ⚠️ Route ordering: named routes (/summary, /insights, /export, /titles, /monthly)
+ * ⚠️ Route ordering: named routes (/quick-add, /ai-report, /scan-receipt, /summary, /insights, /export, /titles, /monthly)
  *    MUST appear BEFORE /:id so Express doesn't interpret them as ObjectId params.
  */
 
 const express = require("express");
 const { body } = require("express-validator");
+const multer  = require("multer");
 
 const {
   getAllTransactions,
@@ -23,6 +24,9 @@ const {
   exportCSV,
   getTitleSuggestions,
   getMonthlyTrend,
+  parseQuickAdd,
+  generateAIReport,
+  parseReceiptImage,
 } = require("../controllers/transactionController");
 
 const { protect } = require("../middleware/authMiddleware");
@@ -90,7 +94,48 @@ const createRequiredValidation = [
   body("category").notEmpty().withMessage("Category is required."),
 ];
 
+// Validation for AI Quick Add — text field only, enums are enforced by the controller
+const quickAddValidation = [
+  body("text")
+    .trim()
+    .notEmpty()
+    .withMessage("Input text is required.")
+    .isLength({ min: 3 })
+    .withMessage("Please provide at least 3 characters.")
+    .isLength({ max: 500 })
+    .withMessage("Input cannot exceed 500 characters."),
+];
+
+// ─── Multer — memory storage for receipt image uploads ───────────────────────────
+// Files are held in RAM as Buffer objects (req.file.buffer) and passed directly
+// to Gemini as base64 inlineData — no disk I/O, no temp file cleanup needed.
+// Accepted MIME types are validated here so invalid uploads are rejected before
+// reaching the controller.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB hard ceiling
+  fileFilter: (_req, file, cb) => {
+    const ACCEPTED = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+    if (ACCEPTED.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(
+        new Error(
+          "Unsupported file type. Please upload a JPEG, PNG, or WEBP image.",
+        ),
+      );
+    }
+  },
+});
+
 // ─── Named routes (before /:id) ────────────────────────────────────────────────
+router.post("/quick-add", quickAddValidation, parseQuickAdd); // AI Quick Add — Gemini NLP
+router.get("/ai-report", generateAIReport);                   // Sprint 2 — Gemini monthly report
+router.post(                                                  // Sprint 3 — Gemini vision OCR
+  "/scan-receipt",
+  upload.single("receiptImage"),
+  parseReceiptImage,
+);
 router.get("/summary", getSummary);
 router.get("/insights", getInsights);
 router.get("/export", exportCSV);
