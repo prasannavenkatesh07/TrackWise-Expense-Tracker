@@ -13,6 +13,8 @@
  * MongoDB Response → JSON → React setState → UI re-render
  */
 
+require('dns').setDefaultResultOrder('ipv4first'); // ✦ Fixes Render IPv6 email crash
+
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -33,6 +35,7 @@ const { startRecurringJob } = require("./jobs/recurringJob"); // ✦ Phase A
 
 // ─── Initialise App ───────────────────────────────────────────────────────────
 const app = express();
+app.set('trust proxy', 1); // ✦ Tells rate limiter to trust Render's proxy
 
 // ─── Core Middleware ──────────────────────────────────────────────────────────
 app.use(express.json());
