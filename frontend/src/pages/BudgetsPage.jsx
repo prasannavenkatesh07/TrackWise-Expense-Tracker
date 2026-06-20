@@ -4,32 +4,32 @@
  * Per-Category Budget Goals Page
  *
  * Features:
- *   - Month/year selector to view any past or current month
- *   - Header health strip: total allocated, total spent, over-budget count
- *   - Budget cards grid: each shows category, limit, spent, remaining,
- *     animated progress bar (green/amber/red thresholds), over-budget badge
- *   - "Add / Edit Budget" modal — POST /api/budgets (upsert by category + month)
- *   - Delete button per card — DELETE /api/budgets/:id
- *   - "Add budgets for all unset categories" quick-fill shortcut
+ * - Month/year selector to view any past or current month
+ * - Header health strip: total allocated, total spent, over-budget count
+ * - Budget cards grid: each shows category, limit, spent, remaining,
+ * animated progress bar (green/amber/red thresholds), over-budget badge
+ * - "Add / Edit Budget" modal — POST /api/budgets (upsert by category + month)
+ * - Delete button per card — DELETE /api/budgets/:id
+ * - "Add budgets for all unset categories" quick-fill shortcut
  *
  * API consumed:
- *   GET    /api/budgets?month=&year=      → list with actual spend merged in
- *   GET    /api/budgets/summary?month=&year= → health stats for header
- *   POST   /api/budgets                   → create or update (upsert)
- *   DELETE /api/budgets/:id               → remove budget entry
+ * GET    /api/budgets?month=&year=      → list with actual spend merged in
+ * GET    /api/budgets/summary?month=&year= → health stats for header
+ * POST   /api/budgets                   → create or update (upsert)
+ * DELETE /api/budgets/:id               → remove budget entry
  *
  * MERN Data Flow:
- *   BudgetsPage mounts → GET /api/budgets → Budget.getBudgetsWithSpend()
- *   aggregation (budgets + Transaction spend per category) → merged JSON
- *   → React state → animated progress bars rendered
+ * BudgetsPage mounts → GET /api/budgets → Budget.getBudgetsWithSpend()
+ * aggregation (budgets + Transaction spend per category) → merged JSON
+ * → React state → animated progress bars rendered
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import {
   Target, Plus, Trash2, Loader2, Edit3,
   ChevronLeft, ChevronRight, TrendingDown,
-  AlertTriangle, CheckCircle2, X,
+  AlertTriangle, CheckCircle2, X, ChevronDown
 } from 'lucide-react';
 import { useToast } from '../context/ToastContext';
 
@@ -58,13 +58,79 @@ const MONTH_NAMES = [
 ];
 const fmtINR = (n) => `₹${(n||0).toLocaleString('en-IN', { minimumFractionDigits: 0 })}`;
 
+// ── Custom Select Component ────────────────────────────────────────────────────
+// Replaces the ugly native browser <select> with a sleek, theme-aware dropdown
+const CustomSelect = ({ value, onChange, options, placeholder, disabled, error }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  // Close dropdown if clicked outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setIsOpen(!isOpen)}
+        className={`w-full flex items-center justify-between input-field text-left ${
+          error ? 'border-rose-400 focus:ring-rose-400' : ''
+        } ${disabled ? 'opacity-50 cursor-not-allowed bg-slate-50 dark:bg-slate-900/50' : 'bg-white dark:bg-slate-900'}`}
+      >
+        <span className={`block truncate ${value ? 'text-slate-800 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'}`}>
+          {value || placeholder}
+        </span>
+        <ChevronDown 
+          size={16} 
+          className={`text-slate-400 transition-transform duration-200 flex-shrink-0 ${isOpen ? 'rotate-180' : ''}`} 
+        />
+      </button>
+
+      {isOpen && !disabled && (
+        <div className="absolute z-50 w-full mt-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-60 overflow-y-auto animate-slide-down py-1.5">
+          {options.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-slate-500 text-center">No categories left</div>
+          ) : (
+            options.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  onChange(opt);
+                  setIsOpen(false);
+                }}
+                className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${
+                  value === opt
+                    ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold'
+                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                }`}
+              >
+                {opt}
+                {value === opt && <CheckCircle2 size={14} className="text-emerald-500" />}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Header health pill ─────────────────────────────────────────────────────────
 const HealthPill = ({ label, value, accent, isLoading }) => (
-  <div className="flex-1 min-w-0 px-4 py-3 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-card text-center">
-    <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-0.5">{label}</p>
+  <div className="px-3 sm:px-4 py-3 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-card text-center overflow-hidden">
+    <p className="text-[10px] sm:text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-0.5 truncate" title={label}>{label}</p>
     {isLoading
       ? <div className="skeleton h-6 w-16 mx-auto rounded" />
-      : <p className={`font-numeric text-base font-bold ${accent}`}>{value}</p>
+      : <p className={`font-numeric text-sm sm:text-base font-bold truncate ${accent}`} title={typeof value === 'string' ? value : ''}>{value}</p>
     }
   </div>
 );
@@ -80,20 +146,13 @@ const BudgetCard = ({ budget, onEdit, onDelete, deleting }) => {
     : '#10b981';
 
   return (
-    <article className="card hover:scale-[1.01] transition-transform duration-200 relative">
-      {/* Over-budget badge */}
-      {isOverBudget && (
-        <div className="absolute top-3 right-10 flex items-center gap-1 px-2 py-0.5 bg-rose-100 dark:bg-rose-900/30 rounded-full">
-          <AlertTriangle size={10} className="text-rose-500" aria-hidden="true" />
-          <span className="text-[10px] font-bold text-rose-600 dark:text-rose-400">Over budget</span>
-        </div>
-      )}
-
-      {/* Delete button */}
+    <article className="card hover:scale-[1.01] transition-transform duration-200 relative group">
+      
+      {/* Delete button (Absolute Top Right) */}
       <button
         onClick={() => onDelete(budget._id)}
         disabled={deleting === budget._id}
-        className="absolute top-3 right-3 btn-ghost p-1.5 opacity-0 group-hover:opacity-100
+        className="absolute top-3 right-3 z-20 btn-ghost p-1.5 opacity-0 group-hover:opacity-100
                    hover:opacity-100 focus:opacity-100 transition-opacity"
         aria-label={`Delete budget for ${category}`}
         title="Delete"
@@ -105,17 +164,26 @@ const BudgetCard = ({ budget, onEdit, onDelete, deleting }) => {
       </button>
 
       {/* Category header */}
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-start gap-3 mb-4">
         <div
-          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+          className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5"
           style={{ backgroundColor: `${color}20` }}
           aria-hidden="true"
         >
           <Target size={16} style={{ color }} />
         </div>
-        <div className="min-w-0">
-          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">{category}</h3>
-          <p className="text-xs text-slate-400 dark:text-slate-500">
+        <div className="min-w-0 pr-6 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">{category}</h3>
+            {/* INLINE OVER-BUDGET BADGE */}
+            {isOverBudget && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/30 flex-shrink-0" title="This category has exceeded its limit">
+                <AlertTriangle size={9} className="text-rose-500" />
+                <span className="text-[9px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider">Over budget</span>
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-slate-400 dark:text-slate-500 truncate mt-0.5">
             {fmtINR(spent)} spent of {fmtINR(limit)}
           </p>
         </div>
@@ -220,22 +288,22 @@ const BudgetModal = ({ initial, month, year, usedCategories, onSave, onClose }) 
         </h2>
 
         <div className="space-y-4">
-          {/* Category */}
-          <div>
-            <label htmlFor="bm-cat" className="form-label">Category</label>
-            <select id="bm-cat" value={category}
-              onChange={e => { setCategory(e.target.value); setErr(er => ({ ...er, category: '' })); }}
-              className={`select-field ${err.category ? 'border-rose-400 focus:ring-rose-400' : ''}`}
+          {/* ✦ FIX: Replaced native select with CustomSelect */}
+          <div className="relative z-20">
+            <label className="form-label">Category</label>
+            <CustomSelect
+              value={category}
+              onChange={(val) => { setCategory(val); setErr(er => ({ ...er, category: '' })); }}
+              options={available}
+              placeholder="Select category…"
               disabled={isEdit}
-            >
-              <option value="">Select category…</option>
-              {available.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
+              error={err.category}
+            />
             {err.category && <p className="text-xs text-rose-500 mt-1 font-medium" role="alert">{err.category}</p>}
           </div>
 
           {/* Limit */}
-          <div>
+          <div className="relative z-10">
             <label htmlFor="bm-limit" className="form-label">Monthly limit (₹)</label>
             <input id="bm-limit" type="number" min="1" value={limit}
               onChange={e => { setLimit(e.target.value); setErr(er => ({ ...er, limit: '' })); }}
@@ -246,7 +314,7 @@ const BudgetModal = ({ initial, month, year, usedCategories, onSave, onClose }) 
           </div>
 
           {/* Month/year indicator */}
-          <p className="text-xs text-slate-400 dark:text-slate-500">
+          <p className="text-xs text-slate-400 dark:text-slate-500 pt-1">
             This limit applies to <strong className="text-slate-600 dark:text-slate-300">{MONTH_NAMES[month - 1]} {year}</strong>.
           </p>
         </div>
@@ -382,7 +450,7 @@ const BudgetsPage = () => {
       </div>
 
       {/* ── Health strip ─────────────────────────────────────────────── */}
-      <section aria-label="Budget health summary" className="flex gap-3 mb-6 overflow-x-auto pb-1">
+      <section aria-label="Budget health summary" className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <HealthPill label="Total allocated"  value={fmtINR(summary?.totalAllocated)}  accent="text-slate-800 dark:text-slate-100" isLoading={loading} />
         <HealthPill label="Total spent"      value={fmtINR(summary?.totalSpent)}      accent="text-rose-600 dark:text-rose-400"   isLoading={loading} />
         <HealthPill label="Remaining"        value={fmtINR(summary?.totalRemaining)}  accent="text-emerald-600 dark:text-emerald-400" isLoading={loading} />
@@ -393,7 +461,7 @@ const BudgetsPage = () => {
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {Array.from({length: 6}).map((_, i) => (
-            <div key={i} className="card space-y-3">
+            <div key={i} className="card space-y-3 relative">
               <div className="skeleton h-9 w-9 rounded-xl" />
               <div className="skeleton h-4 w-2/3 rounded" />
               <div className="skeleton h-3 w-full rounded-full" />

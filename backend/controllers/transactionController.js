@@ -23,6 +23,7 @@
 const { validationResult } = require("express-validator");
 const { GoogleGenAI } = require("@google/genai");
 const Transaction = require("../models/Transaction");
+const Budget = require("../models/Budget"); // ✦ Added Budget Model for AI Report
 const { TRANSACTION_CATEGORIES } = Transaction;
 
 // ─── Gemini Client — lazy singleton ───────────────────────────────────────────
@@ -41,9 +42,9 @@ const getGenAI = () => {
  *
  * Even with `responseMimeType: "application/json"` + `responseSchema`,
  * gemini-2.5-flash occasionally:
- *   - wraps the JSON in ```json ... ``` or ``` ... ``` code fences
- *   - prefixes/suffixes the JSON with conversational text ("Sure! Here's...")
- *   - adds trailing commentary after the closing brace
+ * - wraps the JSON in ```json ... ``` or ``` ... ``` code fences
+ * - prefixes/suffixes the JSON with conversational text ("Sure! Here's...")
+ * - adds trailing commentary after the closing brace
  *
  * This function defends against all of the above before calling JSON.parse.
  *
@@ -105,10 +106,10 @@ const extractAndParseJSON = (rawText) => {
  * string value or an array/object of items).
  *
  * Strategy:
- *  - If we're inside an unterminated string literal, close the quote.
- *  - Strip any trailing dangling comma.
- *  - Append the correct closing brackets/braces to balance what's open,
- *    based on a simple stack walk of the original (unrepaired) string.
+ * - If we're inside an unterminated string literal, close the quote.
+ * - Strip any trailing dangling comma.
+ * - Append the correct closing brackets/braces to balance what's open,
+ * based on a simple stack walk of the original (unrepaired) string.
  *
  * This is intentionally conservative — it only ever appends characters,
  * never removes/rewrites content — so a successfully-parsed result still
@@ -116,7 +117,7 @@ const extractAndParseJSON = (rawText) => {
  *
  * @param {string} str - The cleaned (but possibly truncated) JSON string.
  * @returns {string} A string with appended closing characters, ready for
- *                    another JSON.parse attempt.
+ * another JSON.parse attempt.
  */
 const repairTruncatedJSON = (str) => {
   let result = str;
@@ -550,19 +551,19 @@ const getMonthlyTrend = async (req, res, next) => {
  * parse it into a structured transaction object ready to auto-fill the form.
  *
  * Request body:
- *   { text: "I bought groceries at Spar for 1200 rupees today" }
+ * { text: "I bought groceries at Spar for 1200 rupees today" }
  *
  * Response:
- *   {
- *     success: true,
- *     data: {
- *       title:    "Groceries at Spar",
- *       amount:   1200,
- *       type:     "Expense",
- *       category: "Food & Groceries",
- *       date:     "2025-07-14"
- *     }
- *   }
+ * {
+ * success: true,
+ * data: {
+ * title:    "Groceries at Spar",
+ * amount:   1200,
+ * type:     "Expense",
+ * category: "Food & Groceries",
+ * date:     "2025-07-14"
+ * }
+ * }
  */
 const parseQuickAdd = async (req, res, next) => {
   try {
@@ -738,17 +739,17 @@ OUTPUT FORMAT — Return ONLY this JSON object, nothing else:
  * Gemini 2.5 Flash, and returns a structured "Financial Roast & Report" JSON.
  *
  * Response shape:
- *   {
- *     success: true,
- *     month:   "June 2025",
- *     data: {
- *       score:       82,
- *       summary:     "You had a solid month overall…",
- *       roast:       "Your entertainment spend is basically a Netflix empire…",
- *       praise:      "Keeping housing under 30% of income? Rare discipline.",
- *       actionItems: ["Cut dining out by ₹2,000", "…", "…"]
- *     }
- *   }
+ * {
+ * success: true,
+ * month:   "June 2025",
+ * data: {
+ * score:       82,
+ * summary:     "You had a solid month overall…",
+ * roast:       "Your entertainment spend is basically a Netflix empire…",
+ * praise:      "Keeping housing under 30% of income? Rare discipline.",
+ * actionItems: ["Cut dining out by ₹2,000", "…", "…"]
+ * }
+ * }
  *
  * Returns 204 (no content) if the user has no transactions this month so the
  * frontend can show an empty-state prompt rather than a confusing AI error.
@@ -778,10 +779,11 @@ const generateAIReport = async (req, res, next) => {
       year:  "numeric",
     });
 
-    // ── 2. Fetch summary + category breakdown in parallel ────────────────────
-    const [summary, breakdown] = await Promise.all([
+    // ── 2. Fetch summary, category breakdown, AND budgets in parallel ────────
+    const [summary, breakdown, budgets] = await Promise.all([
       Transaction.getSummaryForUser(req.user._id, options),
       Transaction.getCategoryBreakdownForUser(req.user._id, options),
+      Budget.find({ user_id: req.user._id }).lean(), // ✦ Fetch Category Budgets
     ]);
 
     // ── 3. Guard: no data this month → skip AI call, return 204 ─────────────
@@ -810,25 +812,31 @@ const generateAIReport = async (req, res, next) => {
             .join(", ")
         : "No expense categories recorded.";
 
-    // ── 6. Build the data context string injected into the Gemini prompt ─────
+    // ✦ 6. Format Category Budgets
+    const budgetStr = budgets.length > 0
+      ? budgets.map((b) => `- ${b.category}: Limit ₹${b.limit.toLocaleString("en-IN")}`).join("\n")
+      : "No specific category budgets set.";
+
+    // ── 7. Build the data context string injected into the Gemini prompt ─────
     const financialContext = [
       `Month: ${monthLabel}`,
       `Total Income:  ₹${summary.totalIncome.toLocaleString("en-IN")}`,
       `Total Expense: ₹${summary.totalExpense.toLocaleString("en-IN")}`,
       `Net Balance:   ₹${summary.balance.toLocaleString("en-IN")}`,
-      `Monthly Budget: ₹${monthlyBudget.toLocaleString("en-IN")} — ${budgetStatus} by ₹${budgetDelta.toLocaleString("en-IN")}`,
+      `Monthly Global Budget: ₹${monthlyBudget.toLocaleString("en-IN")} — ${budgetStatus} by ₹${budgetDelta.toLocaleString("en-IN")}`,
       `Savings Rate: ${summary.totalIncome > 0 ? (((summary.totalIncome - summary.totalExpense) / summary.totalIncome) * 100).toFixed(1) : "0.0"}%`,
       `Expense Breakdown: ${breakdownStr}`,
+      `Category Budgets:\n${budgetStr}`, // ✦ Inject budgets here
     ].join("\n");
 
-    // ── 7. Strict Gemini system prompt ───────────────────────────────────────
+    // ── 8. Strict Gemini system prompt ───────────────────────────────────────
     const systemPrompt = `You are a witty, sharp, and expert financial advisor for TrackWise, an Indian personal finance app. Your clients are salaried professionals in India. All monetary values are in Indian Rupees (₹).
 
 You will be given one month of a user's real financial data. Analyse it carefully and return ONLY a single valid JSON object — absolutely NO markdown, NO code fences, NO explanation text before or after the JSON.
 
 YOUR ANALYSIS MUST BE GROUNDED STRICTLY IN THE PROVIDED DATA:
-- The "roast" must call out their actual highest expense category or worst spending pattern visible in the numbers. Do NOT invent habits not evidenced by the data.
-- The "praise" must highlight something genuinely positive in the data (good savings rate, staying under budget, low spend in a category, etc.). Do NOT give hollow generic praise.
+- The "roast" must call out their actual highest expense category, worst spending pattern, or ANY category where they exceeded their individual category budget visible in the numbers. Do NOT invent habits not evidenced by the data.
+- The "praise" must highlight something genuinely positive in the data (good savings rate, staying under global budget, staying within specific category limits, etc.). Do NOT give hollow generic praise.
 - The "score" must reflect the real financial picture: savings rate, budget adherence, and balance between income and expense all influence it.
 - The "actionItems" must be specific to this user's actual spending — reference real category names and real rupee amounts from the data.
 
@@ -850,7 +858,7 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
   "actionItems": ["<specific tip 1 with ₹ amounts>", "<specific tip 2>", "<specific tip 3>"]
 }`;
 
-    // ── 8. Call Gemini 2.5 Flash ─────────────────────────────────────────────
+    // ── 9. Call Gemini 2.5 Flash ─────────────────────────────────────────────
     const model = getGenAI().models;
     const response = await model.generateContent({
       model: "gemini-2.5-flash",
@@ -876,7 +884,7 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
       },
     });
 
-    // ── 9. Extract raw text from Gemini response ─────────────────────────────
+    // ── 10. Extract raw text from Gemini response ─────────────────────────────
     const rawText = extractGeminiText(response);
 
     if (!rawText) {
@@ -886,7 +894,7 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
       });
     }
 
-    // ── 10. Robustly extract and parse JSON (strips code fences, slices to {...})
+    // ── 11. Robustly extract and parse JSON (strips code fences, slices to {...})
     let parsed;
     try {
       parsed = extractAndParseJSON(rawText);
@@ -904,7 +912,7 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
       });
     }
 
-    // ── 11. Validate and sanitise all five required fields ───────────────────
+    // ── 12. Validate and sanitise all five required fields ───────────────────
     const score =
       typeof parsed.score === "number" &&
       parsed.score >= 1 &&
@@ -982,22 +990,22 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
  *
  * multer (configured in routes/transactions.js) places the file in memory and
  * attaches it to req.file before this controller runs:
- *   req.file.buffer    — raw image bytes
- *   req.file.mimetype  — e.g. "image/jpeg", "image/png", "image/webp"
+ * req.file.buffer    — raw image bytes
+ * req.file.mimetype  — e.g. "image/jpeg", "image/png", "image/webp"
  *
  * Request:  multipart/form-data with field "receiptImage" (≤ 5 MB)
  * Response:
- *   {
- *     success: true,
- *     message: "Receipt scanned. Please verify the fields before saving.",
- *     data: {
- *       title:    "Groceries at Spar",   // max 5 words
- *       amount:   1249.00,               // final total, number only
- *       type:     "Expense",
- *       category: "Food & Groceries",    // strict enum match
- *       date:     "2025-06-14"           // YYYY-MM-DD, falls back to today
- *     }
- *   }
+ * {
+ * success: true,
+ * message: "Receipt scanned. Please verify the fields before saving.",
+ * data: {
+ * title:    "Groceries at Spar",   // max 5 words
+ * amount:   1249.00,               // final total, number only
+ * type:     "Expense",
+ * category: "Food & Groceries",    // strict enum match
+ * date:     "2025-06-14"           // YYYY-MM-DD, falls back to today
+ * }
+ * }
  */
 const parseReceiptImage = async (req, res, next) => {
   try {

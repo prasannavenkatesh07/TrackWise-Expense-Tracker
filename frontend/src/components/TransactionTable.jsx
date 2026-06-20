@@ -2,23 +2,24 @@
  * components/TransactionTable.jsx  (Phase D — fully upgraded)
  *
  * Phase D additions over the original:
- *   ✦ Edit Transaction modal (Pencil icon → pre-filled form → PUT /api/transactions/:id)
- *   ✦ Delete Confirm modal   (replaces window.confirm — toast-style inline dialog)
- *   ✦ Search Autocomplete    (GET /api/transactions/titles?q= → typeahead dropdown)
- *   ✦ Date range filter props (from / to) passed in from HistoryPage
- *   ✦ isRecurring / isGeneratedCopy badges on rows
+ * ✦ Edit Transaction modal (Pencil icon → pre-filled form → PUT /api/transactions/:id)
+ * ✦ Delete Confirm modal   (replaces window.confirm — toast-style inline dialog)
+ * ✦ Search Autocomplete    (GET /api/transactions/titles?q= → typeahead dropdown)
+ * ✦ Date range filter props (from / to) passed in from HistoryPage
+ * ✦ isRecurring / isGeneratedCopy badges on rows
+ * ✦ Custom Dropdowns       (replaces native browser <select> tags)
  *
  * Props:
- *   refreshTrigger {number} — increment from parent to force re-fetch
- *   from           {string} — YYYY-MM-DD date range start (optional)
- *   to             {string} — YYYY-MM-DD date range end   (optional)
+ * refreshTrigger {number} — increment from parent to force re-fetch
+ * from           {string} — YYYY-MM-DD date range start (optional)
+ * to             {string} — YYYY-MM-DD date range end   (optional)
  *
  * MERN Data Flow:
- *   GET /api/transactions?page&limit&type&category&search&from&to
- *   PUT /api/transactions/:id  → editTransaction controller → findOneAndUpdate
- *   DELETE /api/transactions/:id
- *   GET /api/transactions/titles?q= → getTitleSuggestions aggregation
- *   GET /api/transactions/export    → CSV blob download
+ * GET /api/transactions?page&limit&type&category&search&from&to
+ * PUT /api/transactions/:id  → editTransaction controller → findOneAndUpdate
+ * DELETE /api/transactions/:id
+ * GET /api/transactions/titles?q= → getTitleSuggestions aggregation
+ * GET /api/transactions/export    → CSV blob download
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -28,7 +29,7 @@ import {
   Search, Filter, Download, Trash2, Edit3,
   ChevronLeft, ChevronRight, Loader2, FileText,
   TrendingUp, TrendingDown, X, Check, Repeat,
-  RefreshCw, AlertTriangle,
+  RefreshCw, AlertTriangle, ChevronDown
 } from 'lucide-react';
 import { useToast } from '../context/ToastContext';
 
@@ -38,6 +39,77 @@ const CATEGORIES = [
   'Entertainment','Healthcare','Salary','Other',
 ];
 const PAGE_LIMIT = 10;
+
+// ── Custom Select Component ────────────────────────────────────────────────────
+// Replaces the ugly native browser <select> with a sleek, theme-aware dropdown
+const CustomSelect = ({ value, onChange, options, placeholder, disabled, error, icon: Icon, className = '' }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  // Close dropdown if clicked outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedOption = options.find(o => o.value === value);
+  const displayText = selectedOption ? selectedOption.label : placeholder;
+
+  return (
+    <div className={`relative ${className}`} ref={containerRef}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setIsOpen(!isOpen)}
+        // ✦ FIX: Removed hardcoded background classes so it inherits .input-field styling properly
+        className={`w-full flex items-center justify-between input-field text-left ${
+          error ? 'border-rose-400 focus:ring-rose-400' : ''
+        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${Icon ? 'pl-9' : ''}`}
+      >
+        {Icon && <Icon size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />}
+        <span className={`block truncate ${value !== undefined && value !== '' ? 'text-slate-800 dark:text-slate-200' : 'text-slate-500 dark:text-slate-400'}`}>
+          {displayText}
+        </span>
+        <ChevronDown
+          size={16}
+          className={`text-slate-400 transition-transform duration-200 flex-shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {isOpen && !disabled && (
+        <div className="absolute z-50 w-full min-w-max mt-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-60 overflow-y-auto animate-slide-down py-1.5">
+          {options.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-slate-500 text-center">No options</div>
+          ) : (
+            options.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => {
+                  onChange(opt.value);
+                  setIsOpen(false);
+                }}
+                className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between whitespace-nowrap ${
+                  value === opt.value
+                    ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold'
+                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                }`}
+              >
+                {opt.label}
+                {value === opt.value && <Check size={14} className="text-emerald-500 ml-3" />}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 // ── Skeleton Row ───────────────────────────────────────────────────────────────
 const SkeletonRow = () => (
@@ -79,7 +151,6 @@ const TypeBadge = ({ type }) => type === 'Income'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ✦ Phase D: Delete Confirm Modal
-// Replaces browser-native window.confirm with a styled portal dialog.
 // ─────────────────────────────────────────────────────────────────────────────
 const DeleteConfirmModal = ({ title, onConfirm, onCancel }) =>
   createPortal(
@@ -116,8 +187,6 @@ const DeleteConfirmModal = ({ title, onConfirm, onCancel }) =>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ✦ Phase D: Edit Transaction Modal
-// Pre-fills all fields from the target transaction document.
-// Calls PUT /api/transactions/:id on save.
 // ─────────────────────────────────────────────────────────────────────────────
 const EditModal = ({ tx, onSave, onClose }) => {
   const { toast } = useToast();
@@ -145,7 +214,6 @@ const EditModal = ({ tx, onSave, onClose }) => {
     if (!validate()) return;
     setSaving(true);
     try {
-      // PUT /api/transactions/:id — only sends fields that changed (partial update)
       const { data } = await axios.put(`/api/transactions/${tx._id}`, {
         title:    form.title.trim(),
         amount:   Number(form.amount),
@@ -156,7 +224,7 @@ const EditModal = ({ tx, onSave, onClose }) => {
       });
       if (data.success) {
         toast.success('Transaction updated.', 'Saved');
-        onSave(data.data); // Pass updated doc back to table for optimistic update
+        onSave(data.data);
       }
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Failed to update transaction.', 'Error');
@@ -180,10 +248,7 @@ const EditModal = ({ tx, onSave, onClose }) => {
          role="dialog" aria-modal="true" aria-labelledby="edit-title">
       <div className="absolute inset-0 bg-slate-900/50 dark:bg-slate-950/60 backdrop-blur-sm"
            onClick={onClose} aria-hidden="true" />
-      <div className="relative w-full max-w-lg bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 animate-slide-down overflow-hidden">
-
-        {/* Accent bar */}
-        <div className="h-1 bg-gradient-to-r from-emerald-400 to-teal-400" aria-hidden="true" />
+      <div className="relative w-full max-w-lg bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 animate-slide-down">
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-700">
@@ -224,14 +289,15 @@ const EditModal = ({ tx, onSave, onClose }) => {
           {field('em-title',  'Title',   'text',   'title',  { placeholder: 'Transaction title' })}
           {field('em-amount', 'Amount (₹)', 'number', 'amount', { mono: true, min: 1, placeholder: '0.00' })}
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 gap-3 relative z-20">
             <div>
-              <label htmlFor="em-cat" className="form-label">Category</label>
-              <select id="em-cat" value={form.category}
-                onChange={e => setForm(p => ({ ...p, category: e.target.value }))}
-                className="select-field">
-                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+              <label className="form-label">Category</label>
+              <CustomSelect
+                value={form.category}
+                onChange={val => setForm(p => ({ ...p, category: val }))}
+                options={CATEGORIES.map(c => ({ label: c, value: c }))}
+                placeholder="Select category…"
+              />
             </div>
             <div>
               <label htmlFor="em-date" className="form-label">Date</label>
@@ -266,7 +332,6 @@ const EditModal = ({ tx, onSave, onClose }) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ✦ Phase D: Autocomplete Dropdown
-// Renders below the search input when suggestions are available.
 // ─────────────────────────────────────────────────────────────────────────────
 const AutocompleteDropdown = ({ suggestions, onSelect, inputRef }) => {
   if (!suggestions.length) return null;
@@ -295,12 +360,6 @@ const AutocompleteDropdown = ({ suggestions, onSelect, inputRef }) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Main TransactionTable Component
 // ─────────────────────────────────────────────────────────────────────────────
-/**
- * Props:
- *   refreshTrigger {number} — bump to force re-fetch from parent
- *   from           {string} — YYYY-MM-DD date range start  (Phase D)
- *   to             {string} — YYYY-MM-DD date range end    (Phase D)
- */
 const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
   const { toast } = useToast();
 
@@ -318,14 +377,14 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
   const [page,            setPage]            = useState(1);
 
   // ── Modal / action state ──────────────────────────────────────────────────
-  const [editTarget,      setEditTarget]      = useState(null);   // ✦ Phase D edit modal
-  const [confirmDelete,   setConfirmDelete]   = useState(null);   // ✦ Phase D confirm modal {_id, title}
+  const [editTarget,      setEditTarget]      = useState(null);
+  const [confirmDelete,   setConfirmDelete]   = useState(null);
   const [deletingId,      setDeletingId]      = useState(null);
   const [isExporting,     setIsExporting]     = useState(false);
 
   // ── Autocomplete state ─────────────────────────────────────────────────────
-  const [suggestions,     setSuggestions]     = useState([]);     // ✦ Phase D
-  const [showSuggestions, setShowSuggestions] = useState(false);  // ✦ Phase D
+  const [suggestions,     setSuggestions]     = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const suggestTimer      = useRef(null);
   const searchInputRef    = useRef(null);
 
@@ -341,7 +400,6 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
       setPage(1);
     }, 400);
 
-    // Fetch autocomplete suggestions (Phase D)
     if (val.trim().length >= 1) {
       suggestTimer.current = setTimeout(async () => {
         try {
@@ -373,8 +431,8 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
         ...(search        && { search }),
         ...(typeFilter    && { type: typeFilter }),
         ...(categoryFilter && { category: categoryFilter }),
-        ...(from          && { from }),   // ✦ Phase D — date range from parent
-        ...(to            && { to }),     // ✦ Phase D — date range from parent
+        ...(from          && { from }),
+        ...(to            && { to }),
       });
 
       const { data } = await axios.get(`/api/transactions?${params.toString()}`);
@@ -451,7 +509,6 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
   const formatDate = (d) =>
     new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <section aria-label="Transaction history">
 
@@ -467,11 +524,11 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
         />
       )}
 
-      {/* ── Controls Row ─────────────────────────────────────────────── */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 mb-5">
+      {/* ── Controls Row ────────────────────────────────────────────────── */}
+      <div className="flex flex-col lg:flex-row items-stretch lg:items-center gap-3 mb-5">
 
         {/* ✦ Phase D — Search with autocomplete */}
-        <div className="relative flex-1 min-w-0 w-full sm:w-auto">
+        <div className="relative flex-1 min-w-[200px] z-20">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
           <input
             ref={searchInputRef}
@@ -481,7 +538,7 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
             onChange={e => handleSearchInput(e.target.value)}
             onFocus={() => suggestions.length && setShowSuggestions(true)}
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-            className="input-field pl-9 pr-4"
+            className="input-field pl-9 pr-4 w-full"
             aria-label="Search transactions by title"
             aria-autocomplete="list"
             aria-expanded={showSuggestions}
@@ -496,41 +553,53 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
           )}
         </div>
 
-        {/* Type filter */}
-        <div className="relative">
-          <Filter size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
-          <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}
-            className="select-field pl-8 pr-8 min-w-[130px]" aria-label="Filter by type">
-            <option value="">All Types</option>
-            <option value="Income">Income</option>
-            <option value="Expense">Expense</option>
-          </select>
-        </div>
+        {/* ── Filters & Actions Group ── */}
+        <div className="flex flex-wrap items-center gap-3 flex-shrink-0 relative z-10">
+          
+          {/* ✦ Replace native type <select> with CustomSelect */}
+          <CustomSelect
+            value={typeFilter}
+            onChange={val => setTypeFilter(val)}
+            options={[
+              { label: 'All Types', value: '' },
+              { label: 'Income', value: 'Income' },
+              { label: 'Expense', value: 'Expense' }
+            ]}
+            placeholder="All Types"
+            icon={Filter}
+            className="flex-1 sm:flex-initial w-full sm:w-36"
+          />
 
-        {/* Category filter */}
-        <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
-          className="select-field min-w-[160px]" aria-label="Filter by category">
-          <option value="">All Categories</option>
-          {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
+          {/* ✦ Replace native category <select> with CustomSelect */}
+          <CustomSelect
+            value={categoryFilter}
+            onChange={val => setCategoryFilter(val)}
+            options={[
+              { label: 'All Categories', value: '' },
+              ...CATEGORIES.map(c => ({ label: c, value: c }))
+            ]}
+            placeholder="All Categories"
+            className="flex-1 sm:flex-initial w-full sm:w-48"
+          />
 
-        {/* Clear */}
-        {hasFilters && (
-          <button onClick={clearFilters} className="btn-ghost p-2" title="Clear all filters" aria-label="Clear filters">
-            <X size={15} />
+          {/* Clear */}
+          {hasFilters && (
+            <button onClick={clearFilters} className="btn-ghost p-2 flex-shrink-0" title="Clear all filters" aria-label="Clear filters">
+              <X size={15} />
+            </button>
+          )}
+
+          {/* Refresh */}
+          <button onClick={fetchTransactions} disabled={isLoading} className="btn-ghost p-2 flex-shrink-0" aria-label="Refresh list">
+            <RefreshCw size={15} className={isLoading ? 'animate-spin text-emerald-500' : 'text-slate-400'} />
           </button>
-        )}
 
-        {/* Refresh */}
-        <button onClick={fetchTransactions} disabled={isLoading} className="btn-ghost p-2" aria-label="Refresh list">
-          <RefreshCw size={15} className={isLoading ? 'animate-spin text-emerald-500' : 'text-slate-400'} />
-        </button>
-
-        {/* CSV Export */}
-        <button onClick={handleCSVExport} disabled={isExporting} className="btn-secondary whitespace-nowrap" aria-label="Download transactions as CSV">
-          {isExporting ? <Loader2 size={14} className="animate-spin"/> : <Download size={14}/>}
-          {isExporting ? 'Exporting…' : 'Download CSV'}
-        </button>
+          {/* CSV Export */}
+          <button onClick={handleCSVExport} disabled={isExporting} className="btn-secondary whitespace-nowrap flex-shrink-0" aria-label="Download transactions as CSV">
+            {isExporting ? <Loader2 size={14} className="animate-spin"/> : <Download size={14}/>}
+            {isExporting ? 'Exporting…' : 'Download CSV'}
+          </button>
+        </div>
       </div>
 
       {/* Results count */}
@@ -629,7 +698,7 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
                       <Edit3 size={14} />
                     </button>
 
-                    {/* Delete button — opens confirm modal instead of window.confirm */}
+                    {/* Delete button */}
                     <button
                       onClick={() => requestDelete(tx)}
                       disabled={deletingId === tx._id}

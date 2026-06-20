@@ -1,5 +1,5 @@
 /**
- * routes/auth.js  (Portfolio Bypass — Auto-Verified)
+ * routes/auth.js  (OTP Upgrade)
  */
 
 const express = require("express");
@@ -8,6 +8,8 @@ const router = express.Router();
 
 const {
   register,
+  verifyEmail,     // ✦ Newly added for OTP
+  resendOTP,       // ✦ Newly added for Resend Code
   login,
   forgotPassword,
   resetPassword,
@@ -64,9 +66,11 @@ const loginValidation = [
 
 // ── Public routes ──────────────────────────────────────────────────────────
 router.post("/register", registerValidation, register);
+router.post("/verify-email", verifyEmail);             // ✦ New route to handle OTP verification
+router.post("/resend-otp", resendOTP);                 // ✦ New route to handle OTP resending
 router.post("/login", loginValidation, login);
 router.post("/forgotpassword", forgotPassword);
-router.put("/resetpassword/:token", resetPassword);
+router.put("/reset-password", resetPassword);          // ✦ Updated to remove :token from URL
 router.post("/google-login", googleLogin);
 
 // ── Protected routes ───────────────────────────────────────────────────────

@@ -6,6 +6,7 @@
  * ✦ "OR" divider between Google button and email/password form
  * ✦ "EMAIL_NOT_VERIFIED" error code shows a specific resend-verification hint
  * ✦ "Forgot password?" link now navigates to /forgot-password
+ * ✦ Automatic redirect to /verify-email on unverified login attempt
  * ✦ All existing validation, show/hide toggle, dark mode unchanged
  */
 
@@ -110,6 +111,9 @@ const LoginPage = () => {
       // ✦ Special handling: backend sends code: 'EMAIL_NOT_VERIFIED' on 403
       if (err?.response?.data?.code === 'EMAIL_NOT_VERIFIED') {
         setNotVerified(true);
+        toast.error("Please enter your OTP to verify your account.");
+        //navigate(`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`);
+        //return;
       } else {
         setApiError(err?.response?.data?.message || 'Login failed. Please check your credentials.');
       }
@@ -210,7 +214,12 @@ const LoginPage = () => {
                 <AlertCircle size={15} className="flex-shrink-0 mt-0.5" />
                 <div>
                   <p className="font-semibold">Email not verified</p>
-                  <p className="mt-0.5">Please check your inbox and click the verification link before logging in.</p>
+                  <p className="mt-0.5">
+                    Please check your inbox for the 6-digit code.{' '}
+                    <Link to={`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`} className="underline font-medium hover:text-amber-800">
+                      Click here to verify your account.
+                    </Link>
+                  </p>
                 </div>
               </div>
             )}
@@ -278,7 +287,7 @@ const LoginPage = () => {
         </article>
 
         <p className="text-center text-xs text-slate-400 dark:text-slate-600 mt-6">
-          Secured with JWT authentication &amp; bcrypt encryption.
+          Designed and Developed by Prasanna Venkatesh
         </p>
       </div>
     </main>

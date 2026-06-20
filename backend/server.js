@@ -26,6 +26,7 @@ dotenv.config();
 const authRoutes = require("./routes/auth");
 const transactionRoutes = require("./routes/transactions");
 const budgetRoutes = require("./routes/budgets"); // ✦ Phase A
+const chatRoutes = require("./routes/chat"); // ✦ Sprint 4: RAG Chatbot
 
 // ─── Recurring Job ─────────────────────────────────────────────────────────────
 const { startRecurringJob } = require("./jobs/recurringJob"); // ✦ Phase A
@@ -131,6 +132,9 @@ app.use("/api/transactions", transactionRoutes);
 // Budget routes — JWT protected inside the router (✦)
 // /api/budgets (CRUD + summary)
 app.use("/api/budgets", budgetRoutes);
+
+// Chat routes — JWT protected inside the router (✦ Sprint 4)
+app.use("/api/chat", chatRoutes);
 
 // ─── Global 404 ───────────────────────────────────────────────────────────────
 app.use((req, res) => {

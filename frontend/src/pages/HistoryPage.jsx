@@ -19,14 +19,155 @@
  * → Mongoose filter.date.$gte / $lte → MongoDB → JSON → React rows
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import {
   History, TrendingUp, TrendingDown, Activity,
-  PlusCircle, X, ChevronRight, Calendar, Filter,
+  PlusCircle, X, ChevronRight, Calendar, Filter, ChevronLeft
 } from 'lucide-react';
 import TransactionTable from '../components/TransactionTable';
 import TransactionForm  from '../components/TransactionForm';
+
+// ── Custom Date Picker Component ───────────────────────────────────────────────
+const CustomDatePicker = ({ value, onChange, min, max, error, className = '' }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  // Parse current value safely (YYYY-MM-DD to local Date object)
+  const parseDate = (dateStr) => {
+    if (!dateStr) return new Date();
+    const [y, m, d] = dateStr.split('-');
+    return new Date(y, m - 1, d);
+  };
+
+  const [viewDate, setViewDate] = useState(parseDate(value));
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const currentMonth = viewDate.getMonth();
+  const currentYear = viewDate.getFullYear();
+
+  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+  const firstDay = new Date(currentYear, currentMonth, 1).getDay();
+
+  const handlePrevMonth = (e) => { e.preventDefault(); setViewDate(new Date(currentYear, currentMonth - 1, 1)); };
+  const handleNextMonth = (e) => { e.preventDefault(); setViewDate(new Date(currentYear, currentMonth + 1, 1)); };
+
+  const handleSelectDate = (day) => {
+    const yyyy = currentYear;
+    const mm = String(currentMonth + 1).padStart(2, '0');
+    const dd = String(day).padStart(2, '0');
+    onChange(`${yyyy}-${mm}-${dd}`);
+    setIsOpen(false);
+  };
+
+  const isDateDisabled = (day) => {
+    const checkDateObj = new Date(currentYear, currentMonth, day);
+    if (max) {
+      const [maxY, maxM, maxD] = max.split('-');
+      const maxDateObj = new Date(maxY, maxM - 1, maxD);
+      if (checkDateObj > maxDateObj) return true;
+    }
+    if (min) {
+      const [minY, minM, minD] = min.split('-');
+      const minDateObj = new Date(minY, minM - 1, minD);
+      if (checkDateObj < minDateObj) return true;
+    }
+    return false;
+  };
+
+  const days = Array.from({ length: firstDay }, () => null).concat(
+    Array.from({ length: daysInMonth }, (_, i) => i + 1)
+  );
+
+  const displayDate = value
+    ? new Date(parseDate(value)).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : 'dd-mm-yyyy';
+
+  const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const DAYS_OF_WEEK = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  const [valY, valM, valD] = value ? value.split('-') : [];
+
+  return (
+    <div className={`relative ${className}`} ref={containerRef}>
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className={`w-full flex items-center justify-between input-field text-left ${
+          error ? 'border-rose-400 focus:ring-rose-400' : ''
+        }`}
+      >
+        <span className={`block truncate ${value ? 'text-slate-800 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'}`}>
+          {displayDate}
+        </span>
+        <Calendar size={16} className="text-slate-400 flex-shrink-0 ml-2" />
+      </button>
+
+      {isOpen && (
+        <div className="absolute z-50 left-0 sm:right-0 sm:left-auto w-[280px] mt-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-xl p-4 animate-slide-down">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <button type="button" onClick={handlePrevMonth} className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 transition-colors">
+              <ChevronLeft size={16} />
+            </button>
+            <span className="text-sm font-bold text-slate-800 dark:text-slate-100">
+              {MONTH_NAMES[currentMonth]} {currentYear}
+            </span>
+            <button type="button" onClick={handleNextMonth} className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 transition-colors">
+              <ChevronRight size={16} />
+            </button>
+          </div>
+          
+          {/* Days of Week */}
+          <div className="grid grid-cols-7 gap-1 mb-2">
+            {DAYS_OF_WEEK.map(d => (
+              <div key={d} className="text-center text-[10px] font-semibold text-slate-400 dark:text-slate-500 py-1">
+                {d}
+              </div>
+            ))}
+          </div>
+
+          {/* Days Grid */}
+          <div className="grid grid-cols-7 gap-1">
+            {days.map((day, idx) => {
+              if (!day) return <div key={`empty-${idx}`} />;
+              
+              const isSelected = value && Number(valY) === currentYear && Number(valM) === currentMonth + 1 && Number(valD) === day;
+              const disabled = isDateDisabled(day);
+              const isToday = new Date().getDate() === day && new Date().getMonth() === currentMonth && new Date().getFullYear() === currentYear;
+
+              return (
+                <button
+                  key={day}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => handleSelectDate(day)}
+                  className={[
+                    'h-8 w-full rounded-lg flex items-center justify-center text-xs transition-all duration-150',
+                    isSelected ? 'bg-emerald-500 text-white font-bold shadow-sm scale-105' : 
+                    disabled ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed opacity-50' :
+                    isToday ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900/50' :
+                    'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 font-medium'
+                  ].join(' ')}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 // ── Mini Stat Pill ─────────────────────────────────────────────────────────────
 const StatPill = ({ label, value, icon: Icon, colorClass, isLoading }) => (
@@ -173,29 +314,25 @@ const HistoryPage = () => {
           </div>
 
           {/* From */}
-          <div className="flex items-center gap-2 flex-1">
-            <label htmlFor="hist-from" className="text-xs font-medium text-slate-500 dark:text-slate-400 flex-shrink-0">From</label>
-            <input
-              id="hist-from"
-              type="date"
+          <div className="flex items-center gap-2 flex-1 w-full sm:w-auto">
+            <label className="text-xs font-medium text-slate-500 dark:text-slate-400 flex-shrink-0">From</label>
+            <CustomDatePicker
               value={from}
               max={to || todayStr()}
-              onChange={e => { setFrom(e.target.value); setRefreshKey(k => k + 1); }}
-              className="input-field py-2 text-xs flex-1 min-w-0"
+              onChange={val => { setFrom(val); setRefreshKey(k => k + 1); }}
+              className="flex-1 min-w-0"
             />
           </div>
 
           {/* To */}
-          <div className="flex items-center gap-2 flex-1">
-            <label htmlFor="hist-to" className="text-xs font-medium text-slate-500 dark:text-slate-400 flex-shrink-0">To</label>
-            <input
-              id="hist-to"
-              type="date"
+          <div className="flex items-center gap-2 flex-1 w-full sm:w-auto">
+            <label className="text-xs font-medium text-slate-500 dark:text-slate-400 flex-shrink-0">To</label>
+            <CustomDatePicker
               value={to}
               min={from}
               max={todayStr()}
-              onChange={e => { setTo(e.target.value); setRefreshKey(k => k + 1); }}
-              className="input-field py-2 text-xs flex-1 min-w-0"
+              onChange={val => { setTo(val); setRefreshKey(k => k + 1); }}
+              className="flex-1 min-w-0"
             />
           </div>
 
@@ -243,19 +380,6 @@ const HistoryPage = () => {
           to={to}
         />
       </section>
-
-      {/* ── Tip footer ───────────────────────────────────────────────── */}
-      <footer className="mt-6 flex items-start gap-3 px-1">
-        <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-2 flex-shrink-0" aria-hidden="true" />
-        <p className="text-xs text-slate-400 dark:text-slate-500 leading-relaxed">
-          <strong className="text-slate-500 dark:text-slate-400 font-semibold">Tip:</strong>{' '}
-          Use the{' '}
-          <span className="font-semibold text-slate-600 dark:text-slate-300">date range filter</span>{' '}
-          above to scope your view, then hit{' '}
-          <span className="font-semibold text-slate-600 dark:text-slate-300">Download CSV</span>{' '}
-          to export only that filtered period.
-        </p>
-      </footer>
     </>
   );
 };

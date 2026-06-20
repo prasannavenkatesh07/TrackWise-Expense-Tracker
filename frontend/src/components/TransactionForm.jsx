@@ -4,31 +4,33 @@
  * Quick-Add Transaction Form — with 🎤 Voice Dictation + 🤖 AI Quick Add
  *
  * Features:
- *   - AI Quick Add: type or speak a natural language sentence to auto-fill
- *     the entire form via the Gemini NLP backend (/api/transactions/quick-add)
- *   - Web Speech API voice capture for both the AI Quick Add field AND
- *     the individual Title / Notes fields (graceful degradation if unsupported)
- *   - Controlled form inputs with client-side HTML5 + JS validation
- *   - Category and Type dropdowns matching the backend Mongoose enums
- *   - Optimistic UI: calls `onSuccess(newTransaction)` so DashboardPage
- *     can update summary state immediately without a page reload
+ * - AI Quick Add: type or speak a natural language sentence to auto-fill
+ * the entire form via the Gemini NLP backend (/api/transactions/quick-add)
+ * - Web Speech API voice capture for both the AI Quick Add field AND
+ * the individual Title / Notes fields (graceful degradation if unsupported)
+ * - Controlled form inputs with client-side HTML5 + JS validation
+ * - Category and Type dropdowns matching the backend Mongoose enums
+ * - Custom Dropdown component to replace ugly native <select> elements
+ * - Custom Date Picker to replace native browser calendar
+ * - Optimistic UI: calls `onSuccess(newTransaction)` so DashboardPage
+ * can update summary state immediately without a page reload
  *
  * MERN Data Flow:
- *   AI Quick Add → axios.post('/api/transactions/quick-add', { text })
- *   → Gemini parses NLP → returns { title, amount, type, category, date }
- *   → auto-fills form states → user verifies → submit
- *   → axios.post('/api/transactions', payload) → onSuccess(doc)
+ * AI Quick Add → axios.post('/api/transactions/quick-add', { text })
+ * → Gemini parses NLP → returns { title, amount, type, category, date }
+ * → auto-fills form states → user verifies → submit
+ * → axios.post('/api/transactions', payload) → onSuccess(doc)
  *
  * Voice (AI Quick Add) Flow:
- *   Mic click → SpeechRecognition.start() → user speaks full sentence
- *   → transcript → quickAddText state → user clicks "Auto-fill"
- *   → handleQuickAdd() → Gemini API → form fields populated
+ * Mic click → SpeechRecognition.start() → user speaks full sentence
+ * → transcript → quickAddText state → user clicks "Auto-fill"
+ * → handleQuickAdd() → Gemini API → form fields populated
  *
  * Receipt Scanner (Sprint 3) Flow:
- *   Camera icon click → hidden <input type="file"> → user picks image
- *   → handleScanReceipt() → FormData POST to /api/transactions/scan-receipt
- *   → Gemini Vision OCR → returns { title, amount, type, category, date }
- *   → auto-fills form states → user verifies → submit
+ * Camera icon click → hidden <input type="file"> → user picks image
+ * → handleScanReceipt() → FormData POST to /api/transactions/scan-receipt
+ * → Gemini Vision OCR → returns { title, amount, type, category, date }
+ * → auto-fills form states → user verifies → submit
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -52,6 +54,10 @@ import {
   Wand2,
   X,
   Camera,
+  Info,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 
 // ── Constants matching backend Transaction model enums ─────────────────────────
@@ -69,8 +75,6 @@ const CATEGORIES = [
 const RECURRING_FREQUENCIES = ['Daily', 'Weekly', 'Monthly'];
 
 // Factory — called fresh on each mount so the default date is never stale
-// (fixes the "INITIAL_FORM computed once at module load" bug: if the app is left
-//  open past midnight the default date would otherwise be yesterday)
 const makeInitialForm = () => ({
   title: '',
   amount: '',
@@ -82,39 +86,203 @@ const makeInitialForm = () => ({
   recurringFrequency: 'Monthly',
 });
 
-// ── Mic Button Sub-Component ───────────────────────────────────────────────────
-/**
- * Renders an animated microphone button.
- * Shows a pulsing ring while actively recording.
- */
-const MicButton = ({ isListening, onClick, targetField, activeField, size = 'sm' }) => {
-  const isActiveForThisField = isListening && activeField === targetField;
-  const dimension = size === 'md' ? 'w-10 h-10' : 'w-9 h-9';
-  const iconSize = size === 'md' ? 16 : 15;
+// ── Custom Select Component ────────────────────────────────────────────────────
+const CustomSelect = ({ value, onChange, options, placeholder, disabled, error }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={isActiveForThisField ? 'Stop recording' : `Record ${targetField}`}
-      aria-label={isActiveForThisField ? 'Stop voice recording' : `Start voice recording for ${targetField}`}
-      className={[
-        `relative flex-shrink-0 ${dimension} rounded-lg flex items-center justify-center`,
-        'transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-1',
-        isActiveForThisField
-          ? 'bg-rose-500 text-white focus:ring-rose-400 shadow-lg scale-105'
-          : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 focus:ring-slate-400',
-      ].join(' ')}
-    >
-      {isActiveForThisField && (
-        <span className="absolute inset-0 rounded-lg bg-rose-400 animate-ping opacity-30" />
+    <div className="relative" ref={containerRef}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setIsOpen(!isOpen)}
+        // ✦ FIX: Removed hardcoded bg-white so it matches other input-fields
+        className={`w-full flex items-center justify-between input-field text-left ${
+          error ? 'border-rose-400 focus:ring-rose-400' : ''
+        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+      >
+        <span className={`block truncate ${value ? 'text-slate-800 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'}`}>
+          {value || placeholder}
+        </span>
+        <ChevronDown 
+          size={16} 
+          className={`text-slate-400 transition-transform duration-200 flex-shrink-0 ${isOpen ? 'rotate-180' : ''}`} 
+        />
+      </button>
+
+      {isOpen && !disabled && (
+        <div className="absolute z-50 w-full mt-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-60 overflow-y-auto animate-slide-down py-1.5">
+          {options.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-slate-500 text-center">No options available</div>
+          ) : (
+            options.map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => {
+                  onChange(opt);
+                  setIsOpen(false);
+                }}
+                className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${
+                  value === opt
+                    ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold'
+                    : 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                }`}
+              >
+                {opt}
+                {value === opt && <CheckCircle2 size={14} className="text-emerald-500" />}
+              </button>
+            ))
+          )}
+        </div>
       )}
-      {isActiveForThisField ? (
-        <MicOff size={iconSize} className="relative z-10" />
-      ) : (
-        <Mic size={iconSize} className="relative z-10" />
+    </div>
+  );
+};
+
+// ── Custom Date Picker Component ───────────────────────────────────────────────
+const CustomDatePicker = ({ value, onChange, max, error }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  // Parse current value safely (YYYY-MM-DD to local Date object)
+  const parseDate = (dateStr) => {
+    if (!dateStr) return new Date();
+    const [y, m, d] = dateStr.split('-');
+    return new Date(y, m - 1, d);
+  };
+
+  const [viewDate, setViewDate] = useState(parseDate(value));
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const currentMonth = viewDate.getMonth();
+  const currentYear = viewDate.getFullYear();
+
+  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+  const firstDay = new Date(currentYear, currentMonth, 1).getDay();
+
+  const handlePrevMonth = (e) => { e.preventDefault(); setViewDate(new Date(currentYear, currentMonth - 1, 1)); };
+  const handleNextMonth = (e) => { e.preventDefault(); setViewDate(new Date(currentYear, currentMonth + 1, 1)); };
+
+  const handleSelectDate = (day) => {
+    const yyyy = currentYear;
+    const mm = String(currentMonth + 1).padStart(2, '0');
+    const dd = String(day).padStart(2, '0');
+    onChange(`${yyyy}-${mm}-${dd}`);
+    setIsOpen(false);
+  };
+
+  const isDateDisabled = (day) => {
+    if (!max) return false;
+    const [maxY, maxM, maxD] = max.split('-');
+    const maxDateObj = new Date(maxY, maxM - 1, maxD);
+    const checkDateObj = new Date(currentYear, currentMonth, day);
+    return checkDateObj > maxDateObj;
+  };
+
+  const days = Array.from({ length: firstDay }, () => null).concat(
+    Array.from({ length: daysInMonth }, (_, i) => i + 1)
+  );
+
+  const displayDate = value
+    ? new Date(parseDate(value)).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    : 'Select date';
+
+  const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const DAYS_OF_WEEK = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+  const [valY, valM, valD] = value ? value.split('-') : [];
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        // ✦ FIX: Removed hardcoded bg-white so it matches other input-fields
+        className={`w-full flex items-center justify-between input-field text-left ${
+          error ? 'border-rose-400 focus:ring-rose-400' : ''
+        }`}
+      >
+        <span className={`block truncate ${value ? 'text-slate-800 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'}`}>
+          {displayDate}
+        </span>
+        <Calendar size={16} className="text-slate-400 flex-shrink-0" />
+      </button>
+
+      {isOpen && (
+        <div className="absolute z-50 right-0 w-[280px] mt-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-xl p-4 animate-slide-down">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <button type="button" onClick={handlePrevMonth} className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 transition-colors">
+              <ChevronLeft size={16} />
+            </button>
+            <span className="text-sm font-bold text-slate-800 dark:text-slate-100">
+              {MONTH_NAMES[currentMonth]} {currentYear}
+            </span>
+            <button type="button" onClick={handleNextMonth} className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 transition-colors">
+              <ChevronRight size={16} />
+            </button>
+          </div>
+          
+          {/* Days of Week */}
+          <div className="grid grid-cols-7 gap-1 mb-2">
+            {DAYS_OF_WEEK.map(d => (
+              <div key={d} className="text-center text-[10px] font-semibold text-slate-400 dark:text-slate-500 py-1">
+                {d}
+              </div>
+            ))}
+          </div>
+
+          {/* Days Grid */}
+          <div className="grid grid-cols-7 gap-1">
+            {days.map((day, idx) => {
+              if (!day) return <div key={`empty-${idx}`} />;
+              
+              const isSelected = value && Number(valY) === currentYear && Number(valM) === currentMonth + 1 && Number(valD) === day;
+              const disabled = isDateDisabled(day);
+              const isToday = new Date().getDate() === day && new Date().getMonth() === currentMonth && new Date().getFullYear() === currentYear;
+
+              return (
+                <button
+                  key={day}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => handleSelectDate(day)}
+                  className={[
+                    'h-8 w-full rounded-lg flex items-center justify-center text-xs transition-all duration-150',
+                    isSelected ? 'bg-emerald-500 text-white font-bold shadow-sm scale-105' : 
+                    disabled ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed opacity-50' :
+                    isToday ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900/50' :
+                    'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 font-medium'
+                  ].join(' ')}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       )}
-    </button>
+    </div>
   );
 };
 
@@ -148,24 +316,16 @@ const TransactionForm = ({ onSuccess }) => {
   // ── AI Quick Add state ────────────────────────────────────────────────────
   const [quickAddText, setQuickAddText] = useState('');
   const [isQuickAddLoading, setIsQuickAddLoading] = useState(false);
-  const [quickAddFilled, setQuickAddFilled] = useState(false); // shows confirmation banner
+  const [quickAddFilled, setQuickAddFilled] = useState(false); 
 
   // ── Receipt Scanner state ─────────────────────────────────────────────────
   const [isScanLoading, setIsScanLoading]   = useState(false);
-  const receiptInputRef                     = useRef(null);  // hidden <input type="file">
+  const receiptInputRef                     = useRef(null);
 
-  // ── Voice Dictation state — shared for ALL fields ────────────────────────
-  // activeField can be: 'quickAdd' | 'title' | 'notes' | null
+  // ── Voice Dictation state — Quick Add ONLY ───────────────────────────────
   const [isListening, setIsListening] = useState(false);
-  const [activeField, setActiveField] = useState(null);
   const [speechSupported, setSpeechSupported] = useState(false);
   const recognitionRef = useRef(null);
-  const activeFieldRef = useRef(activeField);
-
-  // Keep ref in sync with state for the onresult closure
-  useEffect(() => {
-    activeFieldRef.current = activeField;
-  }, [activeField]);
 
   // ── Check Web Speech API support + init recogniser on mount ─────────────
   useEffect(() => {
@@ -183,13 +343,11 @@ const TransactionForm = ({ onSuccess }) => {
 
     recognition.onend = () => {
       setIsListening(false);
-      setActiveField(null);
     };
 
     recognition.onerror = (event) => {
       console.error('SpeechRecognition error:', event.error);
       setIsListening(false);
-      setActiveField(null);
       if (event.error === 'not-allowed') {
         toast.error(
           'Microphone access denied. Please allow microphone permission in your browser settings.',
@@ -203,7 +361,7 @@ const TransactionForm = ({ onSuccess }) => {
     return () => recognitionRef.current?.abort();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Patch onresult to always read the current activeField via ref ────────
+  // ── Patch onresult to read transcript for AI Quick Add ───────────────────
   useEffect(() => {
     const recognition = recognitionRef.current;
     if (!recognition) return;
@@ -214,51 +372,34 @@ const TransactionForm = ({ onSuccess }) => {
         .join(' ')
         .trim();
 
-      const field = activeFieldRef.current;
-      if (!field) return;
-
-      if (field === 'quickAdd') {
-        setQuickAddText(transcript);
-      } else {
-        setForm((prev) => ({ ...prev, [field]: transcript }));
-        setErrors((prev) => ({ ...prev, [field]: '' }));
-      }
+      setQuickAddText(transcript);
     };
   }, []);
 
-  // ── Toggle Dictation for any field ───────────────────────────────────────
-  const toggleDictation = useCallback((fieldName) => {
+  // ── Toggle Dictation for Quick Add ───────────────────────────────────────
+  const toggleDictation = useCallback(() => {
     const recognition = recognitionRef.current;
     if (!recognition) return;
 
     if (isListening) {
       recognition.stop();
       setIsListening(false);
-      setActiveField(null);
     } else {
-      setActiveField(fieldName);
       setIsListening(true);
       try {
         recognition.start();
       } catch (e) {
         console.warn('Recognition start error:', e);
         setIsListening(false);
-        setActiveField(null);
       }
     }
   }, [isListening]);
 
   // ── AI Quick Add handler ──────────────────────────────────────────────────
-  /**
-   * POSTs the natural language text to /api/transactions/quick-add.
-   * On success, auto-fills all form fields and shows a verification toast.
-   */
   const handleQuickAdd = async () => {
-    // Stop any active dictation before sending
     if (isListening) {
       recognitionRef.current?.stop();
       setIsListening(false);
-      setActiveField(null);
     }
 
     if (!quickAddText.trim()) {
@@ -277,7 +418,6 @@ const TransactionForm = ({ onSuccess }) => {
       if (data.success && data.data) {
         const { title, amount, type, category, date } = data.data;
 
-        // Auto-fill the form — only overwrite fields the AI returned confidently
         setForm((prev) => ({
           ...prev,
           ...(title    ? { title }    : {}),
@@ -287,13 +427,9 @@ const TransactionForm = ({ onSuccess }) => {
           ...(date     ? { date }     : {}),
         }));
 
-        // Clear any existing validation errors since fields are now populated
         setErrors({});
-
-        // Show the inline confirmation banner
         setQuickAddFilled(true);
 
-        // Fire a persistent toast prompting the user to verify
         toast.success(
           'Form auto-filled! Please review the fields below, then click "Add Transaction" to save.',
           '🤖 AI Quick Add',
@@ -310,30 +446,20 @@ const TransactionForm = ({ onSuccess }) => {
   };
 
   // ── Receipt Scanner handler ──────────────────────────────────────────────
-  /**
-   * Called when the user picks an image from the hidden file input.
-   * Builds a FormData payload (key: "receiptImage") and POSTs it to
-   * /api/transactions/scan-receipt. On success, auto-fills all form fields
-   * exactly like handleQuickAdd does, then shows the verification banner.
-   */
   const handleScanReceipt = async (e) => {
     const file = e.target.files?.[0];
-    // Reset the input so the same file can be re-selected if the user wants to retry
     e.target.value = '';
 
     if (!file) return;
 
-    // Client-side size guard (5 MB matches the multer limit on the server)
     if (file.size > 5 * 1024 * 1024) {
       toast.error('Image must be under 5 MB. Please choose a smaller file.', 'Receipt Scanner');
       return;
     }
 
-    // Stop any active voice dictation before scanning
     if (isListening) {
       recognitionRef.current?.stop();
       setIsListening(false);
-      setActiveField(null);
     }
 
     setIsScanLoading(true);
@@ -343,16 +469,11 @@ const TransactionForm = ({ onSuccess }) => {
       const formData = new FormData();
       formData.append('receiptImage', file);
 
-      // axios automatically sets the correct multipart/form-data Content-Type
-      // (including the boundary) when the body is a FormData instance.
-      // The JWT auth header is already attached globally via axios defaults
-      // set in AuthContext — no manual header needed here.
       const { data } = await axios.post('/api/transactions/scan-receipt', formData);
 
       if (data.success && data.data) {
         const { title, amount, type, category, date } = data.data;
 
-        // Auto-fill only fields the AI returned confidently (same pattern as handleQuickAdd)
         setForm((prev) => ({
           ...prev,
           ...(title    ? { title }               : {}),
@@ -365,7 +486,6 @@ const TransactionForm = ({ onSuccess }) => {
         setErrors({});
         setQuickAddFilled(true);
 
-        // The backend sends a specific message when amount is missing (blurry receipt)
         const msg = data.message?.includes('manually')
           ? data.message
           : 'Receipt scanned! Please review the fields, then click "Add Transaction" to save.';
@@ -382,7 +502,6 @@ const TransactionForm = ({ onSuccess }) => {
     }
   };
 
-  // Allow pressing Enter inside the quick-add input to trigger auto-fill
   const handleQuickAddKeyDown = (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -390,7 +509,6 @@ const TransactionForm = ({ onSuccess }) => {
     }
   };
 
-  // Clear the quick-add bar and its confirmation state
   const clearQuickAdd = () => {
     setQuickAddText('');
     setQuickAddFilled(false);
@@ -456,7 +574,6 @@ const TransactionForm = ({ onSuccess }) => {
         setShowSuccess(true);
         setTimeout(() => setShowSuccess(false), 2500);
 
-        // Reset everything including the quick-add bar
         setForm(makeInitialForm());
         setErrors({});
         setQuickAddText('');
@@ -495,7 +612,7 @@ const TransactionForm = ({ onSuccess }) => {
               </p>
             </div>
             {/* Listening indicator badge */}
-            {isListening && activeField === 'quickAdd' && (
+            {isListening && (
               <span className="ml-auto flex items-center gap-1.5 text-[10px] font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-700/50 rounded-full px-2 py-0.5 animate-pulse">
                 <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
                 Listening…
@@ -516,7 +633,7 @@ const TransactionForm = ({ onSuccess }) => {
                 }}
                 onKeyDown={handleQuickAddKeyDown}
                 placeholder={
-                  isListening && activeField === 'quickAdd'
+                  isListening
                     ? '🎤 Listening… speak your transaction'
                     : 'e.g. "Paid ₹1200 for groceries at Spar today"'
                 }
@@ -531,7 +648,7 @@ const TransactionForm = ({ onSuccess }) => {
                   isQuickAddLoading ? 'opacity-60 cursor-not-allowed' : '',
                 ].join(' ')}
               />
-              {/* Clear button — appears when there's text and AI isn't running */}
+              {/* Clear button */}
               {quickAddText && !isQuickAddLoading && (
                 <button
                   type="button"
@@ -544,19 +661,33 @@ const TransactionForm = ({ onSuccess }) => {
               )}
             </div>
 
-            {/* Microphone button — only shown when Speech API is available */}
+            {/* Microphone button (Only for Quick Add now) */}
             {speechSupported && (
-              <MicButton
-                isListening={isListening}
-                onClick={() => toggleDictation('quickAdd')}
-                targetField="quickAdd"
-                activeField={activeField}
-                size="md"
-              />
+              <button
+                type="button"
+                onClick={toggleDictation}
+                title={isListening ? 'Stop recording' : 'Start voice recording'}
+                aria-label={isListening ? 'Stop voice recording' : 'Start voice recording'}
+                className={[
+                  'relative flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center',
+                  'transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-1',
+                  isListening
+                    ? 'bg-rose-500 text-white focus:ring-rose-400 shadow-lg scale-105'
+                    : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-600 focus:ring-slate-400',
+                ].join(' ')}
+              >
+                {isListening && (
+                  <span className="absolute inset-0 rounded-lg bg-rose-400 animate-ping opacity-30" />
+                )}
+                {isListening ? (
+                  <MicOff size={16} className="relative z-10" />
+                ) : (
+                  <Mic size={16} className="relative z-10" />
+                )}
+              </button>
             )}
 
-            {/* ── Receipt Scanner: hidden file input + Camera trigger button ── */}
-            {/* The input is visually hidden; the Camera button acts as its label */}
+            {/* Receipt Scanner */}
             <input
               ref={receiptInputRef}
               type="file"
@@ -618,7 +749,7 @@ const TransactionForm = ({ onSuccess }) => {
             </button>
           </div>
 
-          {/* Success confirmation banner — shown after AI fills the form */}
+          {/* Success confirmation banner */}
           {quickAddFilled && !isQuickAddLoading && (
             <div
               role="status"
@@ -681,17 +812,12 @@ const TransactionForm = ({ onSuccess }) => {
           </div>
         </div>
 
-        {/* ── Title field with Mic button ───────────────────────────────── */}
+        {/* ── Title field ───────────────────────────────────────────────── */}
         <div>
           <label htmlFor="title" className="form-label">
             <span className="flex items-center gap-1.5">
               <Tag size={11} />
               Title
-              {speechSupported && (
-                <span className="text-emerald-500 dark:text-emerald-400 text-[10px] font-bold ml-1">
-                  🎤 VOICE
-                </span>
-              )}
             </span>
           </label>
           <div className="flex gap-2">
@@ -701,24 +827,12 @@ const TransactionForm = ({ onSuccess }) => {
               type="text"
               value={form.title}
               onChange={handleChange}
-              placeholder={
-                isListening && activeField === 'title'
-                  ? '🎤 Listening…'
-                  : 'e.g., Grocery run at D-Mart'
-              }
+              placeholder="e.g., Grocery run at D-Mart"
               className={`input-field ${errors.title ? 'border-rose-400 focus:ring-rose-400' : ''}`}
               maxLength={100}
               aria-describedby={errors.title ? 'title-error' : undefined}
               aria-invalid={!!errors.title}
             />
-            {speechSupported && (
-              <MicButton
-                isListening={isListening}
-                onClick={() => toggleDictation('title')}
-                targetField="title"
-                activeField={activeField}
-              />
-            )}
           </div>
           <FieldError message={errors.title} />
         </div>
@@ -747,53 +861,48 @@ const TransactionForm = ({ onSuccess }) => {
         </div>
 
         {/* ── Category + Date row ───────────────────────────────────────── */}
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3 relative z-20">
           <div>
-            <label htmlFor="category" className="form-label">
+            <label className="form-label">
               <span className="flex items-center gap-1.5">
                 <LayoutGrid size={11} />
                 Category
               </span>
             </label>
-            <select
-              id="category"
-              name="category"
+            <CustomSelect
               value={form.category}
-              onChange={handleChange}
-              className={`select-field ${errors.category ? 'border-rose-400 focus:ring-rose-400' : ''}`}
-              aria-invalid={!!errors.category}
-            >
-              {CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => {
+                setForm(prev => ({ ...prev, category: val }));
+                if (errors.category) setErrors(prev => ({ ...prev, category: '' }));
+              }}
+              options={CATEGORIES}
+              placeholder="Select category…"
+              error={errors.category}
+            />
             <FieldError message={errors.category} />
           </div>
 
           <div>
-            <label htmlFor="date" className="form-label">
+            <label className="form-label">
               <span className="flex items-center gap-1.5">
                 <Calendar size={11} />
                 Date
               </span>
             </label>
-            <input
-              id="date"
-              name="date"
-              type="date"
+            <CustomDatePicker
               value={form.date}
-              onChange={handleChange}
+              onChange={(val) => {
+                setForm(prev => ({ ...prev, date: val }));
+                if (errors.date) setErrors(prev => ({ ...prev, date: '' }));
+              }}
               max={new Date().toISOString().split('T')[0]}
-              className={`input-field ${errors.date ? 'border-rose-400 focus:ring-rose-400' : ''}`}
-              aria-invalid={!!errors.date}
+              error={errors.date}
             />
             <FieldError message={errors.date} />
           </div>
         </div>
 
-        {/* ── Notes field with Mic button ───────────────────────────────── */}
+        {/* ── Notes field ───────────────────────────────────────────────── */}
         <div>
           <label htmlFor="notes" className="form-label">
             <span className="flex items-center gap-1.5">
@@ -810,35 +919,23 @@ const TransactionForm = ({ onSuccess }) => {
               name="notes"
               value={form.notes}
               onChange={handleChange}
-              placeholder={
-                isListening && activeField === 'notes'
-                  ? '🎤 Listening…'
-                  : 'Any extra details…'
-              }
+              placeholder="Any extra details…"
               rows={2}
               maxLength={250}
               className="input-field resize-none"
             />
-            {speechSupported && (
-              <MicButton
-                isListening={isListening}
-                onClick={() => toggleDictation('notes')}
-                targetField="notes"
-                activeField={activeField}
-              />
-            )}
           </div>
         </div>
 
         {/* ── Recurring toggle ──────────────────────────────────────────── */}
-        <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 focus-within:border-emerald-500 transition-all duration-200">
           <button
             type="button"
             onClick={() => setForm((prev) => ({ ...prev, isRecurring: !prev.isRecurring }))}
             className="w-full flex items-center justify-between px-4 py-3
                        bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100
                        dark:hover:bg-slate-700/60 transition-colors duration-150
-                       focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500"
+                       focus:outline-none"
             aria-pressed={form.isRecurring}
             aria-expanded={form.isRecurring}
           >
@@ -888,8 +985,9 @@ const TransactionForm = ({ onSuccess }) => {
                   </button>
                 ))}
               </div>
-              <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-2 font-medium">
-                🔄 The cron scheduler will auto-generate copies at midnight IST.
+              <p className="flex items-center gap-1.5 text-[10px] text-emerald-600 dark:text-emerald-400 mt-2 font-medium">
+                <Info size={12} />
+                This transaction will automatically repeat at midnight (IST).
               </p>
             </div>
           )}
@@ -918,7 +1016,7 @@ const TransactionForm = ({ onSuccess }) => {
         </div>
       </form>
 
-      {/* ── Voice Dictation Status Bar (shown for ANY active field) ─────── */}
+      {/* ── Voice Dictation Status Bar (Quick Add Only) ─────────────────── */}
       {isListening && (
         <div className="mt-3 flex items-center gap-2 px-3 py-2 bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-700/50 rounded-xl animate-slide-down">
           <div className="flex items-end gap-0.5 h-4" aria-hidden="true">
@@ -933,13 +1031,13 @@ const TransactionForm = ({ onSuccess }) => {
           <span className="text-xs font-semibold text-rose-600 dark:text-rose-400">
             Listening to{' '}
             <strong className="font-bold capitalize">
-              {activeField === 'quickAdd' ? 'AI Quick Add' : activeField}
+              AI Quick Add
             </strong>
             … speak now
           </span>
           <button
             type="button"
-            onClick={() => toggleDictation(activeField)}
+            onClick={toggleDictation}
             className="ml-auto text-xs text-rose-500 hover:text-rose-700 font-semibold underline"
           >
             Stop

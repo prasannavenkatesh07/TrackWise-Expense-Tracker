@@ -1,5 +1,5 @@
 /**
- * models/User.js  (Portfolio Bypass — Auto-Verified)
+ * models/User.js  (OTP Upgrade)
  */
 
 const mongoose = require("mongoose");
@@ -45,16 +45,17 @@ const UserSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
-    // Auto-verify all users for public portfolio access
+    // ✦ Default changed to false so standard signups MUST verify their OTP
     isVerified: {
       type: Boolean,
-      default: true,
+      default: false,
     },
-    resetPasswordToken: {
+    // ✦ Replaced old URL tokens with secure OTP storage
+    otp: {
       type: String,
       select: false,
     },
-    resetPasswordExpire: {
+    otpExpire: {
       type: Date,
       select: false,
     },
@@ -83,18 +84,16 @@ UserSchema.methods.getSignedJwtToken = function () {
   });
 };
 
-// ── Instance Method: Generate Password Reset Token ──────────────────────────
-UserSchema.methods.getResetPasswordToken = function () {
-  const rawToken = crypto.randomBytes(32).toString("hex");
+// ── Instance Method: Generate 6-Digit OTP ───────────────────────────────────
+UserSchema.methods.getOTP = function () {
+  // Generate a random 6-digit number
+  const rawOtp = Math.floor(100000 + Math.random() * 900000).toString();
 
-  this.resetPasswordToken = crypto
-    .createHash("sha256")
-    .update(rawToken)
-    .digest("hex");
+  // Hash it before saving to the database for security
+  this.otp = crypto.createHash("sha256").update(rawOtp).digest("hex");
+  this.otpExpire = Date.now() + 15 * 60 * 1000; // Expires in 15 minutes
 
-  this.resetPasswordExpire = Date.now() + 15 * 60 * 1000;
-
-  return rawToken;
+  return rawOtp; // Return the unhashed OTP to email to the user
 };
 
 module.exports = mongoose.model("User", UserSchema);

@@ -1,5 +1,5 @@
 /**
- * App.jsx — Root Application Component  (Phase E — Final)
+ * App.jsx — Root Application Component  (Phase E — Final & Sprint 4)
  *
  * All routes and providers complete across Phases A–E:
  * - ToastProvider + ToastContainer — global notification stack
@@ -27,6 +27,7 @@ import { ToastProvider } from './context/ToastContext';
 // Layout
 import Navbar from './components/Navbar';
 import ToastContainer from './components/ToastContainer';
+import Chatbot from './components/Chatbot'; // ✦ Sprint 4: Financial Copilot
 
 // Pages
 import LoginPage     from './pages/LoginPage';
@@ -40,9 +41,10 @@ import SettingsPage from './pages/SettingsPage';
 import ReportsPage  from './pages/ReportsPage';
 import BudgetsPage  from './pages/BudgetsPage';
 
-// Phase 4 Auth pages (Email Verification removed for Portfolio Bypass)
+// Phase 4 Auth pages (OTP Upgrade)
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage  from './pages/ResetPasswordPage';
+import VerifyEmailPage    from './pages/VerifyEmailPage';
 
 // ── React Error Boundary ──────────────────────────────────────────────────────
 class ErrorBoundary extends Component {
@@ -120,11 +122,14 @@ const ProtectedRoute = () => {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-300">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-300 relative">
       <Navbar />
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 page-enter">
         <Outlet />
       </main>
+      
+      {/* ✦ Mounted globally across all protected pages */}
+      <Chatbot />
     </div>
   );
 };
@@ -150,11 +155,13 @@ const AppInner = () => {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
         <Route element={<PublicRoute />}>
-          <Route path="/login"    element={<LoginPage />} />
-          <Route path="/register" element={<RegisterPage />} />
+          <Route path="/login"           element={<LoginPage />} />
+          <Route path="/register"        element={<RegisterPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           
-          <Route path="/forgot-password"       element={<ForgotPasswordPage />} />
-          <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+          {/* ✦ Updated for OTP query param routing */}
+          <Route path="/reset-password"  element={<ResetPasswordPage />} />
+          <Route path="/verify-email"    element={<VerifyEmailPage />} />
         </Route>
 
         <Route element={<ProtectedRoute />}>

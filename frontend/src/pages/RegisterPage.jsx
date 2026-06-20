@@ -1,9 +1,9 @@
 /**
- * pages/RegisterPage.jsx  (Auth Upgrade — Portfolio Bypass)
+ * pages/RegisterPage.jsx  (Auth Upgrade — OTP Flow)
  *
  * Changes:
  * ✦ Google Sign-Up button at the top via <GoogleLogin />
- * ✦ Email verification screen removed — user is instantly routed to Dashboard
+ * ✦ Standard email sign-up now routes to the OTP Verification page
  */
 
 import { useState } from 'react';
@@ -77,14 +77,6 @@ const PasswordStrength = ({ password }) => {
   );
 };
 
-// ── Feature bullet ─────────────────────────────────────────────────────────────
-const FeatureBullet = ({ text }) => (
-  <li className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-    <CheckCircle2 size={13} className="text-emerald-500 flex-shrink-0" aria-hidden="true" />
-    {text}
-  </li>
-);
-
 // ── Main RegisterPage ──────────────────────────────────────────────────────────
 const RegisterPage = () => {
   const { loginWithGoogle }       = useAuth();
@@ -142,10 +134,9 @@ const RegisterPage = () => {
         monthlyBudget: Number(form.monthlyBudget) || 50000,
       });
       if (data.success) {
-        // ✦ Instant Login Bypass: Save the JWT and force redirect to initialize the Auth Context
-        localStorage.setItem('token', data.token);
-        toast.success(`Welcome to TrackWise, ${form.name.split(' ')[0]}! 🎉`);
-        window.location.href = '/dashboard';
+        // ✦ OTP Upgrade: Route to Verify Email page instead of Dashboard
+        toast.success(`Account created! Please check your email for the verification code.`);
+        navigate(`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`);
       }
     } catch (err) {
       setApiError(err?.response?.data?.message || 'Registration failed. Please try again.');
@@ -161,6 +152,7 @@ const RegisterPage = () => {
     try {
       const user = await loginWithGoogle(credentialResponse.credential);
       toast.success(`Account created! Welcome, ${user.name.split(' ')[0]}! 🎉`);
+      // Google emails are already verified, route straight to dashboard
       navigate('/dashboard', { replace: true });
     } catch (err) {
       setApiError(err?.response?.data?.message || err?.message || 'Google sign-up failed. Please try again.');
@@ -189,7 +181,7 @@ const RegisterPage = () => {
         {/* Brand header */}
         <div className="text-center mb-7">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-900 dark:bg-slate-700 shadow-lg mb-4 relative">
-            <Wallet size={24} className="textemerald-400" />
+            <Wallet size={24} className="text-emerald-400" />
             <div className="absolute inset-0 rounded-2xl ring-1 ring-inset ring-white/10" />
           </div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 tracking-tight">
@@ -333,15 +325,6 @@ const RegisterPage = () => {
                 : <>Create account<ArrowRight size={17} /></>}
             </button>
           </form>
-
-          {/* Feature list */}
-          <div className="mt-5 pt-5 border-t border-slate-100 dark:border-slate-700">
-            <ul className="space-y-2">
-              <FeatureBullet text="Voice-powered expense dictation" />
-              <FeatureBullet text="Real-time spending insights & alerts" />
-              <FeatureBullet text="CSV export for all your transactions" />
-            </ul>
-          </div>
 
           {/* Login link */}
           <div className="relative my-5">

@@ -4,19 +4,19 @@
  * Top Navigation Bar — rendered on every protected page via App.jsx's ProtectedRoute.
  *
  * Features:
- *   - TrackWise logo + brand name
- *   - Navigation links: Dashboard, History
- *   - Active link indicator (underline + colour)
- *   - Dark / Light mode toggle button
- *   - User avatar (initials + avatarColor)
- *   - Logout button with dropdown menu
- *   - Mobile-responsive hamburger menu
+ * - TrackWise logo + brand name
+ * - Navigation links: Dashboard, History
+ * - Active link indicator (underline + colour)
+ * - Dark / Light mode toggle button
+ * - User avatar (initials + avatarColor)
+ * - Logout button with dropdown menu
+ * - Mobile-responsive hamburger menu
  *
  * Design System:
- *   - Background: bg-slate-900 (nav) with border-b border-slate-800 separator
- *   - Text: text-white / text-slate-400 for inactive links
- *   - Accent: emerald-400 for active states and the logo mark
- *   - All interactive elements include hover, focus, and transition states
+ * - Background: bg-slate-900 (nav) with border-b border-slate-800 separator
+ * - Text: text-white / text-slate-400 for inactive links
+ * - Accent: emerald-400 for active states and the logo mark
+ * - All interactive elements include hover, focus, and transition states
  */
 
 import { useState } from 'react';
@@ -35,6 +35,7 @@ import {
   X,
   Wallet,
   User,
+  Sparkles, // ✦ Added Sparkles for the mobile AI button
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -50,8 +51,8 @@ const NavItem = ({ to, icon: Icon, label, onClick }) => (
         'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium',
         'transition-all duration-200',
         isActive
-          ? 'text-emerald-400 bg-slate-800'           // Active state
-          : 'text-slate-400 hover:text-white hover:bg-slate-800', // Inactive
+          ? 'text-emerald-400 bg-slate-800 dark:bg-slate-800'           // Active state
+          : 'text-slate-400 hover:text-white hover:bg-slate-800 dark:hover:bg-slate-800', // Inactive
       ].join(' ')
     }
   >
@@ -129,7 +130,7 @@ const Navbar = () => {
   return (
     // Use <nav> semantic element as required by the blueprint's HTML5 spec
     <nav
-      className="bg-slate-900 border-b border-slate-800 sticky top-0 z-50"
+      className="bg-slate-900 dark:bg-slate-950 border-b border-slate-800 dark:border-slate-800 sticky top-0 z-50 transition-colors duration-200"
       role="navigation"
       aria-label="Main navigation"
     >
@@ -167,7 +168,7 @@ const Navbar = () => {
             {/* Dark / Light Mode Toggle */}
             <button
               onClick={toggleTheme}
-              className="btn-ghost text-slate-400 hover:text-white hover:bg-slate-800"
+              className="btn-ghost text-slate-400 hover:text-white hover:bg-slate-800 dark:hover:bg-slate-800 transition-colors"
               aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
               title={isDark ? 'Light mode' : 'Dark mode'}
             >
@@ -183,7 +184,7 @@ const Navbar = () => {
               <button
                 onClick={() => setIsDropdownOpen((prev) => !prev)}
                 className="flex items-center gap-2.5 px-2 py-1.5 rounded-xl
-                           hover:bg-slate-800 transition-all duration-200
+                           hover:bg-slate-800 dark:hover:bg-slate-800 transition-all duration-200
                            focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-900"
                 aria-haspopup="true"
                 aria-expanded={isDropdownOpen}
@@ -197,13 +198,13 @@ const Navbar = () => {
                   <span className="text-white text-sm font-semibold truncate max-w-[120px]">
                     {user?.name || 'User'}
                   </span>
-                  <span className="text-slate-500 text-xs truncate max-w-[120px]">
+                  <span className="text-slate-500 dark:text-slate-400 text-xs truncate max-w-[120px]">
                     {user?.email || ''}
                   </span>
                 </div>
                 <ChevronDown
                   size={14}
-                  className={`text-slate-500 transition-transform duration-200 ${
+                  className={`text-slate-500 dark:text-slate-400 transition-transform duration-200 ${
                     isDropdownOpen ? 'rotate-180' : ''
                   }`}
                 />
@@ -221,12 +222,12 @@ const Navbar = () => {
 
                   <div
                     className="absolute right-0 top-full mt-2 w-56 z-20
-                               bg-slate-800 border border-slate-700 rounded-2xl
+                               bg-slate-800 dark:bg-slate-900 border border-slate-700 dark:border-slate-800 rounded-2xl
                                shadow-xl py-2 animate-slide-down"
                     role="menu"
                   >
                     {/* User info header */}
-                    <div className="px-4 py-3 border-b border-slate-700">
+                    <div className="px-4 py-3 border-b border-slate-700 dark:border-slate-800">
                       <div className="flex items-center gap-3">
                         <UserAvatar
                           name={user?.name}
@@ -245,8 +246,8 @@ const Navbar = () => {
                     </div>
 
                     {/* Monthly Budget info */}
-                    <div className="px-4 py-2.5 border-b border-slate-700">
-                      <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">
+                    <div className="px-4 py-2.5 border-b border-slate-700 dark:border-slate-800">
+                      <p className="text-slate-500 dark:text-slate-400 text-xs font-semibold uppercase tracking-wider mb-1">
                         Monthly Budget
                       </p>
                       <p className="text-emerald-400 font-numeric text-sm font-semibold">
@@ -258,7 +259,7 @@ const Navbar = () => {
                     <Link
                       to="/settings"
                       className="w-full flex items-center gap-3 px-4 py-2.5
-                                 text-slate-300 hover:text-white hover:bg-slate-700
+                                 text-slate-300 hover:text-white hover:bg-slate-700 dark:hover:bg-slate-800
                                  transition-colors duration-150 text-sm"
                       role="menuitem"
                       onClick={() => setIsDropdownOpen(false)}
@@ -271,7 +272,7 @@ const Navbar = () => {
                     <button
                       onClick={handleLogout}
                       className="w-full flex items-center gap-3 px-4 py-2.5
-                                 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10
+                                 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 dark:hover:bg-rose-500/10
                                  transition-colors duration-150 text-sm rounded-b-2xl"
                       role="menuitem"
                     >
@@ -286,7 +287,7 @@ const Navbar = () => {
             {/* Mobile Hamburger Toggle */}
             <button
               onClick={() => setIsMobileMenuOpen((prev) => !prev)}
-              className="btn-ghost text-slate-400 hover:text-white hover:bg-slate-800 md:hidden"
+              className="btn-ghost text-slate-400 hover:text-white hover:bg-slate-800 dark:hover:bg-slate-800 transition-colors md:hidden"
               aria-label={isMobileMenuOpen ? 'Close menu' : 'Open menu'}
               aria-expanded={isMobileMenuOpen}
             >
@@ -299,7 +300,7 @@ const Navbar = () => {
       {/* ── Mobile Menu ────────────────────────────────────────────────────── */}
       {isMobileMenuOpen && (
         <div
-          className="md:hidden border-t border-slate-800 bg-slate-900 px-4 py-4
+          className="md:hidden border-t border-slate-800 dark:border-slate-800 bg-slate-900 dark:bg-slate-950 px-4 py-4
                      space-y-1 animate-slide-down"
           role="menu"
           aria-label="Mobile navigation"
@@ -313,8 +314,29 @@ const Navbar = () => {
             />
           ))}
 
+          {/* ✦ NEW: Ask AI link for Mobile (Triggers global event to open Chatbot) */}
+          <button
+            onClick={() => {
+              window.dispatchEvent(new Event('open-chatbot'));
+              closeMobileMenu();
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium
+           text-slate-400 hover:text-white hover:bg-slate-800 dark:hover:bg-slate-800 transition-colors"
+          >
+            <Sparkles size={16} />
+            Ask AI
+          </button>
+
+          {/* Settings link for Mobile */}
+          <NavItem
+            to="/settings"
+            icon={Settings}
+            label="Settings"
+            onClick={closeMobileMenu}
+          />
+
           {/* Divider */}
-          <div className="border-t border-slate-800 my-3" />
+          <div className="border-t border-slate-800 dark:border-slate-800 my-3" />
 
           {/* User info */}
           <div className="flex items-center gap-3 px-3 py-2">
@@ -325,7 +347,7 @@ const Navbar = () => {
             />
             <div>
               <p className="text-white text-sm font-semibold">{user?.name}</p>
-              <p className="text-slate-500 text-xs">{user?.email}</p>
+              <p className="text-slate-500 dark:text-slate-400 text-xs">{user?.email}</p>
             </div>
           </div>
 
@@ -333,7 +355,7 @@ const Navbar = () => {
           <button
             onClick={handleLogout}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-lg
-                       text-rose-400 hover:bg-slate-800 transition-colors duration-150
+                       text-rose-400 hover:bg-slate-800 dark:hover:bg-slate-800 transition-colors duration-150
                        text-sm font-medium"
           >
             <LogOut size={15} />
