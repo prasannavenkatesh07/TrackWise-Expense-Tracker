@@ -1,35 +1,36 @@
 /**
- * controllers/authController.js  (OTP Upgrade & Premium Dark Navy Emails)
+ * controllers/authController.js  (OTP Upgrade & SendGrid Integration)
  */
 
 const crypto = require("crypto");
 const { validationResult } = require("express-validator");
 const { OAuth2Client } = require("google-auth-library");
-const nodemailer = require("nodemailer"); 
+const sgMail = require("@sendgrid/mail"); // ✦ Swapped to SendGrid
 const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Budget = require("../models/Budget");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+sgMail.setApiKey(process.env.SENDGRID_API_KEY); // ✦ Initialize SendGrid
 
-// ── Helper: Send Email via Nodemailer ─────────────────────────────────────────
+// ── Helper: Send Email via SendGrid HTTP API ──────────────────────────────────
 const sendEmail = async (options) => {
-  const transporter = nodemailer.createTransport({
-    service: "Gmail", 
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS, 
-    },
-  });
-
-  const mailOptions = {
-    from: `TrackWise <${process.env.EMAIL_USER}>`,
+  const msg = {
     to: options.email,
+    from: process.env.EMAIL_USER, // ✦ MUST be the exact email you verified in SendGrid
     subject: options.subject,
     html: options.html,
   };
 
-  await transporter.sendMail(mailOptions);
+  try {
+    await sgMail.send(msg);
+  } catch (error) {
+    console.error("Email Service Error:", error);
+    if (error.response) {
+      console.error(error.response.body);
+    }
+    throw new Error("Failed to send email via SendGrid.");
+  }
 };
 
 // ── Helper: build and send the JWT response ───────────────────────────────────
@@ -122,7 +123,6 @@ const register = async (req, res, next) => {
       user.otp = undefined;
       user.otpExpire = undefined;
       await user.save({ validateBeforeSave: false });
-      console.error("Email failed to send:", error);
       return res.status(500).json({ success: false, message: "Email could not be sent." });
     }
   } catch (error) {
@@ -221,7 +221,6 @@ const resendOTP = async (req, res, next) => {
       user.otp = undefined;
       user.otpExpire = undefined;
       await user.save({ validateBeforeSave: false });
-      console.error("Email failed to send:", error);
       return res.status(500).json({ success: false, message: "Email could not be sent." });
     }
   } catch (error) {
@@ -317,7 +316,6 @@ const forgotPassword = async (req, res, next) => {
       user.otp = undefined;
       user.otpExpire = undefined;
       await user.save({ validateBeforeSave: false });
-      console.error("Password reset email failed:", error);
       return res.status(500).json({ success: false, message: "Email could not be sent." });
     }
   } catch (error) {
