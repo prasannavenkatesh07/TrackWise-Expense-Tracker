@@ -135,7 +135,7 @@ const RegisterPage = () => {
       });
       if (data.success) {
         // ✦ OTP Upgrade: Route to Verify Email page instead of Dashboard
-        toast.success(`Account created! Please check your email for the verification code.`);
+        toast.success(`Account created! Please check your email for the verification code. If you did not receive the email, please check your spam folder.`);
         navigate(`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`);
       }
     } catch (err) {

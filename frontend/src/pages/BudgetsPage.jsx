@@ -83,7 +83,7 @@ const CustomSelect = ({ value, onChange, options, placeholder, disabled, error }
         onClick={() => setIsOpen(!isOpen)}
         className={`w-full flex items-center justify-between input-field text-left ${
           error ? 'border-rose-400 focus:ring-rose-400' : ''
-        } ${disabled ? 'opacity-50 cursor-not-allowed bg-slate-50 dark:bg-slate-900/50' : 'bg-white dark:bg-slate-900'}`}
+        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
         <span className={`block truncate ${value ? 'text-slate-800 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'}`}>
           {value || placeholder}

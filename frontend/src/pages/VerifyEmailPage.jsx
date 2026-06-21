@@ -95,7 +95,7 @@ const VerifyEmailPage = () => {
     try {
       const { data } = await axios.post('/api/auth/resend-otp', { email });
       if (data.success) {
-        toast.success('A new 6-digit code has been sent to your email.', 'Code Sent');
+        toast.success('A new 6-digit code has been sent. If you did not receive the email, please check your spam folder.', 'Code Sent');
         setOtp(''); // Clear the old code
         setCountdown(60); // Start 60-second cooldown
       }
@@ -120,7 +120,7 @@ const VerifyEmailPage = () => {
             Check your email
           </h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-2">
-            We sent a 6-digit code to <span className="font-semibold text-slate-700 dark:text-slate-300">{email}</span>
+            We sent a 6-digit code to <span className="font-semibold text-slate-700 dark:text-slate-300">{email}</span>. <br className="hidden sm:block" />If you did not receive the email, please check your spam folder.
           </p>
         </div>
 
