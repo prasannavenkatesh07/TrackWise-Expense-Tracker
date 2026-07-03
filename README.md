@@ -1,10 +1,219 @@
-# 🏦 TrackWise — Smart Personal Expense Tracker
+<div align="center">
 
-> A production-grade full-stack **MERN** FinTech application featuring voice dictation, smart insights, recurring transactions, per-category budgets, analytics charts, and a complete settings suite.
+# TrackWise
+
+### Expense tracking that doesn't require you to think about expense tracking.
+
+Log transactions by typing naturally, speaking a sentence, or photographing a receipt.  
+TrackWise uses Gemini 3.1 Flash Lite to handle the categorization, parsing, and analysis - so you don't have to.
+
+[![React](https://img.shields.io/badge/React_18-20232A?style=flat-square&logo=react&logoColor=61DAFB)](https://react.dev)
+[![Node.js](https://img.shields.io/badge/Node.js_18+-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![Express](https://img.shields.io/badge/Express_4-000000?style=flat-square&logo=express&logoColor=white)](https://expressjs.com)
+[![MongoDB](https://img.shields.io/badge/MongoDB-47A248?style=flat-square&logo=mongodb&logoColor=white)](https://mongodb.com)
+[![Vite](https://img.shields.io/badge/Vite_5-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev)
+[![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white)](https://tailwindcss.com)
+[![Gemini](https://img.shields.io/badge/Gemini_3.1_Flash_Lite-4285F4?style=flat-square&logo=google&logoColor=white)](https://ai.google.dev)
 
 ---
 
-## 📁 Complete Project Structure
+[🚀 Live Demo](https://use-trackwise.vercel.app/) · [🏗️ Architecture](#architecture) · [🎬 Demo Video](#) · [🛠️ Tech Stack](#tech-stack) · [📖 Docs](#local-development)
+
+</div>
+
+<p align="center">
+  <img src="./docs/hero-demo.gif" alt="TrackWise demo" width="720" />
+</p>
+
+---
+
+## Why I Built This
+
+Every expense tracker I tried had the same problem: it still made me do all the work. Open app, tap category, type amount, hit save - for every coffee.
+
+The entry barrier is why people stop using them.
+
+I wanted to see how much of that friction could be removed with a generative model. The result is TrackWise: you speak, photograph, or type a sentence, and the app figures out the rest. The AI is part of the core data-entry loop, not a reporting add-on.
+
+---
+
+## Features
+
+| Feature                     | Description                                                                                                                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AI Copilot Chatbot**      | A floating chat widget that answers questions about your own spending using a RAG pipeline built on your live transaction history, and can log new expenses directly via Gemini function calling. |
+| **Receipt Scanner**         | Upload or photograph a receipt; Gemini Vision OCR extracts the merchant, amount, and category automatically.                                                                                      |
+| **Voice Logging**           | Dictate an expense using the Web Speech API - the mic button feeds directly into the NLP Quick Add parser.                                                                                        |
+| **NLP Quick Add**           | Type a sentence like _"₹450 on lunch at Saravana Bhavan"_ and Gemini parses it into a structured transaction.                                                                                     |
+| **AI Monthly Report**       | On-demand AI analysis of your month: a financial health score, a critique, praise, and three prioritized action items.                                                                            |
+| **Google OAuth + OTP Auth** | Sign in with Google, or register with email and a 6-digit OTP sent via SendGrid (15-minute expiry, SHA-256 hashed at rest).                                                                       |
+| **Per-Category Budgets**    | Set monthly limits per category; the dashboard shows a live health strip and warns as limits approach.                                                                                            |
+| **Recurring Transactions**  | Mark any expense as recurring; a cron job auto-generates copies daily at 00:05 IST.                                                                                                               |
+| **Analytics Dashboard**     | Doughnut, bar, and line charts across 3M / 6M / 12M windows, powered by Chart.js.                                                                                                                 |
+| **Dark Mode**               | System-aware dark/light toggle persisted to `localStorage` via Tailwind's `class` strategy.                                                                                                       |
+
+---
+
+## Screenshots
+
+| Dashboard | AI Chat | Receipt Scanner |
+|:---------:|:-------:|:---------------:|
+| ![Dashboard](./docs/screenshots/dashboard.png) | ![AI Chat](./docs/screenshots/ai-chat.png) | ![Receipt Scanner](./docs/screenshots/receipt-scan.png) |
+
+| Reports | AI Coach | Dark Mode |
+|:-------:|:--------:|:---------:|
+| ![Reports](./docs/screenshots/reports.png) | ![AI Coach](./docs/screenshots/ai-coach.png) | ![Dark Mode](./docs/screenshots/dark-mode.png) |
+---
+
+## Engineering Challenges & Design Decisions
+
+This section covers decisions that weren't obvious and why I made them.
+
+### Enforcing Reliable Output from a Generative Model
+
+The NLP Quick Add feature needs Gemini to return a specific five-field JSON object on every call, with no extra text, no markdown fences, and no invented fields.
+
+The challenge: language models don't do that by default.
+
+The solution involved three layers:
+
+1. **`responseMimeType: "application/json"`** on the API call tells the model to constrain its output format.
+2. A **strict system prompt** defines the exact schema - field names, types, and allowed enum values for `category`.
+3. The response goes through **`JSON.parse` in a try/catch**, with a fallback repair step for truncated output, followed by field-level sanitization. If a field is missing or the category doesn't match the enum, a safe fallback is applied instead of surfacing an error.
+
+A lazy `getGenAI()` singleton also means a missing API key only breaks AI routes - the rest of the app still works.
+
+---
+
+### Personalized AI Chatbot with RAG
+
+A generic LLM gives generic financial advice. That's not useful.
+
+Before each chat message is sent to Gemini, the backend runs several Mongoose queries in parallel:
+
+- Recent transactions (last 15)
+- Monthly category breakdown
+- Active budget limits and current spend
+
+That data is injected directly into the system prompt so the model is answering questions about the user's actual money, not textbook scenarios.
+
+---
+
+### Letting the AI Log Expenses Directly via Function Calling
+
+Parsing a chatbot's natural-language reply with regex to extract an amount and category is fragile - the model might phrase a confirmation a dozen different ways.
+
+Instead, the chatbot registers an `add_transaction` tool with Gemini's function-calling API. When a message describes spending money, Gemini responds with a structured function call (not free text) containing the title, amount, type, category, and date - all validated against the same enums as the rest of the app.
+
+The backend validates the arguments, saves the transaction to MongoDB, then sends the result back to Gemini as a `functionResponse` so it can generate a natural confirmation in a second turn. This costs an extra round trip per logged expense, but it means the save is never dependent on parsing free-form text - the model is contractually shaped by the tool's schema instead.
+
+---
+
+### Preserving Chat State Across Navigation
+
+The chatbot is mounted once in `App.jsx`, outside `<Routes>`. This means the conversation persists when the user navigates between pages - the component never unmounts.
+
+A sliding window (`history.slice(-6)`) caps context to the six most recent turns. This keeps token usage predictable and avoids sending the entire conversation history on every request. The window is also sanitized to ensure it always starts with a user turn, which the `@google/genai` SDK requires.
+
+---
+
+### Voice Input Without Stale Closures
+
+The mic button uses the Web Speech API's `onresult` callback, which fires asynchronously. React's closure model means a naive implementation captures a stale reference to the input field.
+
+The fix is an `activeFieldRef` that holds a ref to the current active input. The async callback reads from the ref instead of the closure, so it always writes to the correct field regardless of when it fires.
+
+---
+
+### One Cron Job Instead of Three
+
+Recurring transactions can be daily, weekly, or monthly. The obvious approach is three separate cron schedules - one per frequency.
+
+Instead, a single job runs daily at 00:05 IST and checks each recurring transaction's `lastGeneratedAt` timestamp against its frequency to decide if it's due. This means there's one place to debug instead of three, and it's resilient to downtime: if the server is down at midnight, the job still catches up correctly on the next run instead of silently missing a day.
+
+---
+
+## Security
+
+- Passwords are hashed with **bcrypt at 12 salt rounds** before being stored; the field is `select: false` in the schema so it's never returned by a query unless explicitly requested.
+- OTPs are **SHA-256 hashed** before storage with a 15-minute expiry - the plaintext code only ever exists in the email sent to the user.
+- **JWT-based auth** on every protected route; the `protect` middleware attaches `req.user` from the verified token, and every controller scopes its database queries to `req.user._id` so one user can never read or modify another's data.
+- **Rate limiting** is applied separately to `/api/auth/*` (15 requests / 15 minutes, brute-force protection) and `/api/transactions/quick-add` (10 requests / minute, to protect the Gemini quota).
+- **Google OAuth tokens are verified server-side** via `google-auth-library` before a session is issued - the frontend never trusts a token it receives without backend verification.
+- The Gemini API key lives only in the backend `.env` file. AI requests always go through Express, never directly from the browser.
+
+---
+
+## Architecture
+
+<a name="architecture"></a>
+
+<p align="center">
+  <img src="./docs/architecture.png" alt="TrackWise architecture diagram" width="680" />
+</p>
+
+---
+
+## Tech Stack
+
+**Frontend**
+React 18 · Vite 5 · Tailwind CSS 3 · Chart.js 4 · react-markdown · lucide-react
+
+**Backend**
+Node.js 18 · Express 4 · express-rate-limit · multer · morgan
+
+**Database**
+MongoDB Atlas · Mongoose 8
+
+**AI**
+Gemini 3.1 Flash Lite via `@google/genai` - chat with function calling, Vision OCR, NLP parsing, monthly reports
+
+**Authentication**
+JWT · bcryptjs · Google OAuth (`google-auth-library`) · SendGrid OTP email
+
+**Scheduling**
+node-cron - recurring transaction processor
+
+**Deployment**
+Frontend: Vercel · Backend: Render · Database: MongoDB Atlas
+
+---
+
+## API Overview
+
+A representative subset of endpoints. Full route map is in `/backend/routes/`.
+
+| Method | Endpoint                         | Description                                                             |
+| ------ | -------------------------------- | ----------------------------------------------------------------------- |
+| `POST` | `/api/auth/register`             | Register with email; triggers OTP email                                 |
+| `POST` | `/api/auth/login`                | Email/password login; returns JWT                                       |
+| `POST` | `/api/auth/google-login`         | Verify Google ID token; find-or-create user                             |
+| `POST` | `/api/transactions`              | Create a transaction                                                    |
+| `GET`  | `/api/transactions`              | Fetch all transactions for the authenticated user                       |
+| `PUT`  | `/api/transactions/:id`          | Edit an existing transaction                                            |
+| `POST` | `/api/transactions/quick-add`    | Parse a natural language string into a transaction via Gemini           |
+| `POST` | `/api/transactions/scan-receipt` | OCR a receipt image via Gemini Vision                                   |
+| `GET`  | `/api/transactions/ai-report`    | Generate the monthly AI financial report                                |
+| `POST` | `/api/chat`                      | Send a message to the RAG chatbot (supports tool-based expense logging) |
+| `GET`  | `/api/budgets`                   | Fetch budgets with live spend totals                                    |
+| `POST` | `/api/budgets`                   | Create or update a category budget (upsert)                             |
+
+---
+
+## Design Notes
+
+- Chat context is capped at the **last 6 message turns** to keep token usage stable.
+- Monthly AI reports are **generated on demand** - no background processing needed.
+- Recurring transactions are processed by a single cron job at **00:05 IST daily**, with per-document idempotency checks instead of separate jobs per frequency.
+- Receipt OCR sends the image as a base64 `inlineData` payload - no file is persisted to the server.
+- A missing `GEMINI_API_KEY` breaks only AI routes; all other routes remain functional.
+
+---
+
+## Project Structure
+
+<details>
+<summary>Expand project structure</summary>
 
 ```
 smart-expense-tracker/
@@ -13,472 +222,156 @@ smart-expense-tracker/
 │   ├── config/
 │   │   └── db.js                         # Mongoose connection helper
 │   ├── controllers/
-│   │   ├── authController.js             # register, login, getMe, updateBudget,
-│   │   │                                 #   updateProfile, changePassword, deleteAccount
-│   │   ├── budgetController.js           # getBudgets, createOrUpdate (upsert),
-│   │   │                                 #   deleteBudget, getBudgetSummary
+│   │   ├── authController.js             # register (OTP flow), verifyEmail, resendOtp,
+│   │   │                                 #   login, googleLogin, getMe, updateProfile,
+│   │   │                                 #   changePassword, deleteAccount,
+│   │   │                                 #   forgotPassword, resetPassword
+│   │   ├── budgetController.js           # getBudgets, createOrUpdate, deleteBudget,
+│   │   │                                 #   getBudgetSummary
+│   │   ├── chatController.js             # handleChat - RAG + function-calling chatbot
 │   │   └── transactionController.js      # getAllTransactions, createTransaction,
 │   │                                     #   editTransaction, deleteTransaction,
 │   │                                     #   getSummary, getInsights, exportCSV,
-│   │                                     #   getTitleSuggestions, getMonthlyTrend
+│   │                                     #   getTitleSuggestions, getMonthlyTrend,
+│   │                                     #   parseQuickAdd, generateAIReport,
+│   │                                     #   parseReceiptImage
 │   ├── jobs/
-│   │   └── recurringJob.js               # node-cron daily scheduler — auto-generates
-│   │                                     #   copies of recurring transactions at 00:05 IST
+│   │   └── recurringJob.js               # node-cron daily scheduler (00:05 IST)
 │   ├── middleware/
 │   │   └── authMiddleware.js             # JWT protect middleware
 │   ├── models/
 │   │   ├── Budget.js                     # Per-category monthly limit schema +
 │   │   │                                 #   getBudgetsWithSpend() aggregation static
-│   │   ├── Transaction.js                # Full transaction schema with isRecurring +
-│   │   │                                 #   getMonthlyTrend(), getSummaryForUser(),
-│   │   │                                 #   getCategoryBreakdownForUser(),
-│   │   │                                 #   getTitleSuggestions() statics
-│   │   └── User.js                       # User schema + bcrypt pre-save hook +
+│   │   ├── Transaction.js                # Full transaction schema + aggregation statics
+│   │   └── User.js                       # User schema + bcrypt hook + OTP fields +
 │   │                                     #   matchPassword() + getSignedJwtToken()
 │   ├── routes/
-│   │   ├── auth.js                       # /api/auth/* (7 endpoints)
-│   │   ├── budgets.js                    # /api/budgets/* (4 endpoints)
-│   │   └── transactions.js              # /api/transactions/* (9 endpoints)
-│   ├── server.js                         # Express entry point, rate limiter,
-│   │                                     #   global error handler, route mounting
-│   ├── package.json
-│   ├── .env.example
-│   └── README.md
+│   │   ├── auth.js                       # /api/auth/*          (13 endpoints)
+│   │   ├── budgets.js                    # /api/budgets/*        (4 endpoints)
+│   │   ├── chat.js                       # /api/chat/*           (1 endpoint)
+│   │   └── transactions.js              # /api/transactions/*   (12 endpoints)
+│   └── server.js                         # Express entry, rate limiting, error handler
 │
 └── frontend/
-    ├── src/
-    │   ├── components/
-    │   │   ├── ExpenseChart.jsx           # Chart.js Doughnut — dark-mode reactive
-    │   │   ├── Navbar.jsx                 # Logo, nav links (Dashboard/History/Reports/
-    │   │   │                              #   Budgets), dark toggle, user dropdown,
-    │   │   │                              #   Settings link, logout toast
-    │   │   ├── Onboarding.jsx             # 3-step wizard modal shown once per user
-    │   │   │                              #   (budget → income → expense → celebration)
-    │   │   ├── SmartInsights.jsx          # Dismissible alert banners from insights API
-    │   │   ├── ToastContainer.jsx         # Portal-rendered toast stack with progress bars
-    │   │   ├── TransactionForm.jsx        # Add transaction form + 🎤 Web Speech API
-    │   │   │                              #   voice dictation + recurring toggle
-    │   │   └── TransactionTable.jsx       # History table + search autocomplete +
-    │   │                                  #   edit modal + delete confirm modal +
-    │   │                                  #   date range props + CSV export
-    │   ├── context/
-    │   │   ├── AuthContext.jsx            # JWT storage, axios header, session restore
-    │   │   ├── ThemeContext.jsx           # Dark/light toggle, localStorage persist
-    │   │   └── ToastContext.jsx           # Global toast state + useToast() hook
-    │   ├── pages/
-    │   │   ├── BudgetsPage.jsx            # Per-category budget cards, month navigator,
-    │   │   │                              #   health strip, add/edit modal, delete
-    │   │   ├── DashboardPage.jsx          # Stat cards, budget bar, insights, chart,
-    │   │   │                              #   quick-add form, onboarding wizard
-    │   │   ├── HistoryPage.jsx            # TransactionTable + date range filter +
-    │   │   │                              #   quick-add slide panel + summary pills
-    │   │   ├── LoginPage.jsx              # Login form + validation + success toast
-    │   │   ├── NotFoundPage.jsx           # 404 with 10s auto-redirect countdown
-    │   │   ├── RegisterPage.jsx           # Register + password strength meter +
-    │   │   │                              #   success toast
-    │   │   ├── ReportsPage.jsx            # Bar chart (Income vs Expense) + Line chart
-    │   │   │                              #   (Trend + Savings) + Top 5 categories +
-    │   │   │                              #   3M/6M/12M selector
-    │   │   └── SettingsPage.jsx           # Profile (name/email/avatar colour) +
-    │   │                                  #   password change + budget goal +
-    │   │                                  #   3-step delete account gate
-    │   ├── App.jsx                        # Router + ProtectedRoute + PublicRoute +
-    │   │                                  #   ErrorBoundary + ToastContainer
-    │   ├── index.css                      # Tailwind + CSS vars + .card/.btn-primary/
-    │   │                                  #   .input-field/.badge/.alert-* component classes
-    │   └── main.jsx                       # React 18 createRoot + global error listeners
-    ├── index.html                         # Sora + JetBrains Mono Google Fonts
-    ├── package.json
-    ├── postcss.config.js
-    ├── tailwind.config.js                 # darkMode: class, custom tokens, animations
-    └── vite.config.js                     # /api proxy → Express (dev CORS-free)
+    └── src/
+        ├── components/
+        │   ├── Chatbot.jsx               # Floating RAG + function-calling chat widget
+        │   ├── ExpenseChart.jsx          # Chart.js Doughnut (dark-mode reactive)
+        │   ├── Navbar.jsx                # Nav, dark toggle, user dropdown
+        │   ├── Onboarding.jsx            # 3-step wizard (shown once per new user)
+        │   ├── SmartInsights.jsx         # Dismissible AI insight banners
+        │   ├── ToastContainer.jsx        # Portal-rendered toast stack
+        │   ├── TransactionForm.jsx       # Add form + Voice + NLP + Receipt Scanner
+        │   └── TransactionTable.jsx      # History table + search + edit/delete modals
+        ├── context/
+        │   ├── AuthContext.jsx           # JWT, axios header, Google OAuth token
+        │   ├── ThemeContext.jsx          # Dark/light toggle, localStorage persist
+        │   └── ToastContext.jsx          # Global toast state + useToast() hook
+        ├── pages/
+        │   ├── BudgetsPage.jsx           # Budget cards, month navigator, health strip
+        │   ├── DashboardPage.jsx         # Stat cards, chart, quick-add, onboarding
+        │   ├── HistoryPage.jsx           # TransactionTable + date range filter
+        │   ├── LoginPage.jsx             # Email/password + Google Sign-In
+        │   ├── RegisterPage.jsx          # Registration + OTP step
+        │   ├── ReportsPage.jsx           # Charts + AI Coach tab (score, critique, actions)
+        │   ├── SettingsPage.jsx          # Profile, password, delete account
+        │   └── ...                       # ForgotPassword, ResetPassword, VerifyEmail, 404
+        ├── App.jsx                       # Router + ProtectedRoute + ErrorBoundary + Chatbot
+        ├── index.css                     # Tailwind + CSS vars + utility component classes
+        └── main.jsx                      # React 18 createRoot + GoogleOAuthProvider
 ```
+
+</details>
 
 ---
 
-## 🚀 Quick Start
+## Local Development
 
-### Prerequisites
+**Prerequisites:** Node.js ≥ 18, a free [MongoDB Atlas](https://mongodb.com/atlas) cluster, a [Google AI Studio](https://aistudio.google.com/apikey) API key, a [SendGrid](https://sendgrid.com) API key, and Google OAuth credentials.
 
-- Node.js ≥ 18
-- MongoDB Atlas account (free tier is sufficient)
-
-### 1 — Backend
+### 1 - Backend
 
 ```bash
 cd backend
 npm install
 cp .env.example .env
-# Fill in MONGO_URI, JWT_SECRET in .env
+# Fill in the variables listed below
 npm run dev
-# API live at http://localhost:5000
+# API running at http://localhost:5000
 ```
 
-### 2 — Frontend
+### 2 - Frontend
 
 ```bash
 cd frontend
 npm install
+cp .env.example .env
+# Set VITE_GOOGLE_CLIENT_ID
 npm run dev
-# App live at http://localhost:5173
+# App running at http://localhost:5173
 ```
 
-The Vite proxy forwards all `/api/*` calls to `localhost:5000` — no CORS configuration needed in development.
+> Vite proxies all `/api` requests to Express in development - no CORS configuration needed locally.
 
----
+### Other Scripts
 
-## 🔌 Full API Reference
+```bash
+# Backend
+npm start          # Start without nodemon
 
-### Auth — `/api/auth`
-
-> All write routes rate-limited: **15 requests / 15 minutes per IP**
-
-| Method | Route       | Auth | Description                                       |
-| ------ | ----------- | ---- | ------------------------------------------------- |
-| POST   | `/register` | ❌   | Create account → JWT                              |
-| POST   | `/login`    | ❌   | Authenticate → JWT                                |
-| GET    | `/me`       | ✅   | Get current user profile                          |
-| PUT    | `/budget`   | ✅   | Update monthly budget goal                        |
-| PUT    | `/profile`  | ✅   | Update name, email, avatarColor                   |
-| PUT    | `/password` | ✅   | Change password (requires currentPassword)        |
-| DELETE | `/account`  | ✅   | Permanent account + data deletion (password gate) |
-
-### Transactions — `/api/transactions`
-
-> All routes JWT-protected via `router.use(protect)`
-
-| Method | Route       | Description                                                       |
-| ------ | ----------- | ----------------------------------------------------------------- |
-| GET    | `/`         | List transactions — `?page&limit&type&category&search&from&to`    |
-| POST   | `/`         | Create transaction (supports `isRecurring`, `recurringFrequency`) |
-| PUT    | `/:id`      | Edit transaction (partial update via `$set`)                      |
-| DELETE | `/:id`      | Delete transaction                                                |
-| GET    | `/summary`  | Income/Expense/Balance totals + category breakdown (`?from&to`)   |
-| GET    | `/insights` | Smart alert rules (food >40%, savings ≥20%, budget exceeded)      |
-| GET    | `/export`   | Download all transactions as CSV (includes recurring fields)      |
-| GET    | `/titles`   | Autocomplete suggestions — `?q=` (ranked by frequency + recency)  |
-| GET    | `/monthly`  | Monthly trend data — `?months=6` (for Reports charts)             |
-
-### Budgets — `/api/budgets`
-
-> All routes JWT-protected
-
-| Method | Route      | Description                                                     |
-| ------ | ---------- | --------------------------------------------------------------- |
-| GET    | `/`        | Budgets + actual spend for `?month=&year=`                      |
-| GET    | `/summary` | Health stats: allocated, spent, over-budget count               |
-| POST   | `/`        | Create or update (upsert) by `(user_id, category, month, year)` |
-| DELETE | `/:id`     | Remove a budget entry                                           |
-
----
-
-## 🧩 Mongoose Schema Reference
-
-### User
-
-| Field         | Type   | Notes                                           |
-| ------------- | ------ | ----------------------------------------------- |
-| name          | String | required, 2–60 chars                            |
-| email         | String | required, unique, lowercase                     |
-| password      | String | bcrypt hashed, `select: false`                  |
-| monthlyBudget | Number | default ₹50,000 — drives dashboard progress bar |
-| avatarColor   | String | hex colour for initials avatar                  |
-
-### Transaction
-
-| Field              | Type     | Notes                                                                                            |
-| ------------------ | -------- | ------------------------------------------------------------------------------------------------ |
-| title              | String   | required, 2–100 chars                                                                            |
-| amount             | Number   | required, min ₹1                                                                                 |
-| type               | Enum     | `Income` \| `Expense`                                                                            |
-| category           | Enum     | Housing / Food & Groceries / Transport / Utilities / Entertainment / Healthcare / Salary / Other |
-| date               | Date     | default `Date.now`                                                                               |
-| user_id            | ObjectId | ref: User, indexed                                                                               |
-| notes              | String   | optional, max 250 chars                                                                          |
-| isRecurring        | Boolean  | template flag — cron generates copies daily                                                      |
-| recurringFrequency | Enum     | `Daily` \| `Weekly` \| `Monthly` \| null                                                         |
-| lastGeneratedAt    | Date     | cron deduplication timestamp                                                                     |
-| isGeneratedCopy    | Boolean  | true on auto-generated copies (shown as `AUTO` badge)                                            |
-
-### Budget
-
-| Field                    | Type     | Notes                                           |
-| ------------------------ | -------- | ----------------------------------------------- |
-| user_id                  | ObjectId | ref: User, indexed                              |
-| category                 | Enum     | same 8 categories as Transaction                |
-| limit                    | Number   | monthly spending limit in ₹                     |
-| month                    | Number   | 1–12                                            |
-| year                     | Number   | ≥ 2020                                          |
-| _(virtual)_ spent        | Number   | injected by `getBudgetsWithSpend()` aggregation |
-| _(virtual)_ percentage   | Number   | `(spent/limit)*100`                             |
-| _(virtual)_ isOverBudget | Boolean  | `spent > limit`                                 |
-
-Compound unique index: `(user_id, category, month, year)` — enforces one budget per category per month.
-
----
-
-## 🔐 Authentication Flow
-
-```
-Register / Login
-  │
-  ├─ POST /api/auth/register { name, email, password, monthlyBudget }
-  │    └─ bcrypt.hash (pre-save hook) → User.create() → jwt.sign() → { token, user }
-  │
-  ├─ POST /api/auth/login { email, password }
-  │    └─ bcrypt.compare() → jwt.sign() → { token, user }
-  │
-  └─ React: AuthContext.login(token, user)
-       ├─ localStorage.setItem('expenseToken', token)
-       └─ axios.defaults.headers.common['Authorization'] = 'Bearer <token>'
-
-Every subsequent protected request:
-  axios call (Authorization: Bearer <token>)
-  → authMiddleware.protect()
-      ├─ jwt.verify(token, JWT_SECRET) → { id }
-      ├─ User.findById(id) → req.user
-      └─ next() → controller
+# Frontend
+npm run build      # Production build → dist/
+npm run preview    # Preview production build locally
 ```
 
 ---
 
-## 🎤 Voice Dictation — Web Speech API
-
-Available on the `title` and `notes` fields in `TransactionForm.jsx`:
-
-```js
-const SpeechRecognition =
-  window.SpeechRecognition || window.webkitSpeechRecognition;
-recognition.lang = "en-IN"; // Indian English locale
-recognition.continuous = false; // Stops after first natural pause
-recognition.interimResults = false; // Only final transcript used
-
-recognition.onresult = (event) => {
-  const transcript = event.results[0][0].transcript;
-  setForm((prev) => ({ ...prev, [activeField]: transcript }));
-};
-```
-
-Supported in Chrome and Edge. Gracefully hidden on unsupported browsers.
-
----
-
-## 🔄 Recurring Transactions — node-cron
-
-`backend/jobs/recurringJob.js` registers a cron at `00:05 IST` daily (`5 0 * * *`).
-
-**Logic per tick:**
-
-1. Fetch all `Transaction` documents where `isRecurring: true, isGeneratedCopy: false`
-2. For each, check `isDueToday(lastGeneratedAt, recurringFrequency)`:
-   - Daily → `daysDiff >= 1`
-   - Weekly → `daysDiff >= 7`
-   - Monthly → different calendar month from `lastGeneratedAt`
-3. If due: `Transaction.create({ ...template, date: new Date(), isRecurring: false, isGeneratedCopy: true })`
-4. Update `lastGeneratedAt` on the template (prevents double-generation on restart)
-5. Also runs once on server startup to catch any missed generations
-
----
-
-## 🏗️ Frontend Architecture
-
-### Context Providers (App.jsx wrapping order)
-
-```
-ThemeProvider   → adds/removes `dark` class on <html>
-BrowserRouter   → React Router v6
-AuthProvider    → JWT session, axios default header
-ToastProvider   → global toast[] array + addToast/removeToast
-ErrorBoundary   → class component catching render errors
-AppInner        → routes + ToastContainer portal
-```
-
-### Route Map
-
-| Path         | Page                               | Access    |
-| ------------ | ---------------------------------- | --------- |
-| `/`          | → redirect                         | —         |
-| `/login`     | LoginPage                          | Public    |
-| `/register`  | RegisterPage                       | Public    |
-| `/dashboard` | DashboardPage                      | Protected |
-| `/history`   | HistoryPage                        | Protected |
-| `/reports`   | ReportsPage                        | Protected |
-| `/budgets`   | BudgetsPage                        | Protected |
-| `/settings`  | SettingsPage                       | Protected |
-| `*`          | NotFoundPage (404 + 10s countdown) | —         |
-
-### Toast System
-
-```js
-// In any component:
-const { toast } = useToast();
-toast.success("Saved!", "Optional title");
-toast.error("Something went wrong.", "Error", 8000); // custom duration
-toast.warning("Approaching budget limit.");
-toast.info("Tip: use 🎤 to dictate transactions.");
-```
-
-Auto-dismiss timers: success/info = 4s, warning = 5s, error = 6s. `duration: 0` = sticky.
-
----
-
-## 🎨 Design System
-
-### Typography
-
-| Font               | Usage                                          |
-| ------------------ | ---------------------------------------------- |
-| **Sora**           | All UI text, headings, labels, buttons         |
-| **JetBrains Mono** | Currency amounts, stat numbers, numeric inputs |
-
-### Colour Tokens (CSS Variables)
-
-| Token              | Light     | Dark      | Usage                 |
-| ------------------ | --------- | --------- | --------------------- |
-| `--bg-canvas`      | `#f8fafc` | `#0f172a` | Page background       |
-| `--bg-card`        | `#ffffff` | `#1e293b` | Card backgrounds      |
-| `--bg-navbar`      | `#0f172a` | `#020617` | Top navigation        |
-| `--accent-emerald` | `#10b981` | same      | Income, success, CTAs |
-| `--accent-rose`    | `#f43f5e` | same      | Expenses, danger      |
-| `--accent-amber`   | `#f59e0b` | same      | Warnings              |
-| `--chart-grid`     | `#f1f5f9` | `#1e293b` | Chart.js grid lines   |
-| `--chart-text`     | `#94a3b8` | `#475569` | Chart.js tick labels  |
-
-### Component Classes (index.css `@layer components`)
-
-| Class                | Description                                       |
-| -------------------- | ------------------------------------------------- |
-| `.card`              | White rounded-2xl card with shadow + hover lift   |
-| `.btn-primary`       | Emerald filled button with active scale           |
-| `.btn-secondary`     | Muted slate button                                |
-| `.btn-danger`        | Rose ghost button for delete actions              |
-| `.btn-ghost`         | Icon-only transparent button                      |
-| `.input-field`       | Consistent form input (dark mode aware)           |
-| `.select-field`      | Extends `.input-field` with cursor-pointer        |
-| `.form-label`        | Uppercase tracking label                          |
-| `.badge-income`      | Emerald pill badge                                |
-| `.badge-expense`     | Rose pill badge                                   |
-| `.alert-warning`     | Amber banner with `animate-slide-down`            |
-| `.alert-success`     | Emerald banner                                    |
-| `.alert-danger`      | Rose banner                                       |
-| `.table-row-alt`     | Alternating row colours + hover                   |
-| `.skeleton`          | Shimmer loading placeholder                       |
-| `.progress-bar-fill` | Animated width bar via `--progress-width` CSS var |
-| `.page-section`      | White rounded card for full-width sections        |
-
----
-
-## ✅ Complete Feature Checklist
-
-### Core (Original Build)
-
-- [x] JWT Authentication — register, login, session restore via `GET /api/auth/me`
-- [x] Protected + Public route guards in React Router
-- [x] React Error Boundary (class component)
-- [x] Dark / Light mode — Tailwind `class` strategy, localStorage persist, OS detection
-- [x] Smart Insights Engine (3 rules: food overspend, savings rate, budget exceeded)
-- [x] Animated Budget Progress Bar (green → amber → rose thresholds)
-- [x] Category Breakdown Doughnut Chart (dark-mode reactive via CSS vars)
-- [x] 🎤 Voice Dictation — Web Speech API on title + notes fields
-- [x] Transaction Table — search, type/category filter, pagination
-- [x] 1-Click CSV Export (Blob URL download)
-- [x] Alternating row colours + hover effects
-- [x] Responsive Tailwind CSS Grid layouts
-- [x] Semantic HTML5 (`<main>`, `<nav>`, `<section>`, `<article>`, `<header>`, `<footer>`)
-- [x] MongoDB Aggregation Pipelines (no in-memory summing)
-- [x] Global Express error handler
-
-### Phase A — Backend Expansion
-
-- [x] `express-rate-limit` — 15 req/15 min on `/api/auth/*`
-- [x] `Budget` Mongoose model with `getBudgetsWithSpend()` static
-- [x] Full Budget CRUD API (`/api/budgets`)
-- [x] `PUT /api/transactions/:id` — partial `$set` edit endpoint
-- [x] `DELETE /api/auth/account` — bcrypt-confirmed cascade delete
-- [x] `GET /api/transactions/titles?q=` — frequency-ranked autocomplete
-- [x] `GET /api/transactions/monthly?months=` — Chart.js aggregation data
-- [x] `node-cron` daily scheduler — auto-generates recurring transaction copies
-- [x] `isRecurring`, `recurringFrequency`, `lastGeneratedAt`, `isGeneratedCopy` fields
-
-### Phase B — Global UI Infrastructure
-
-- [x] `ToastContext` — global toast state, auto-dismiss timers, 5-toast cap
-- [x] `ToastContainer` — portal to `<body>`, depleting progress bars, slide animations
-- [x] `Onboarding` — 3-step wizard, `localStorage` flag, skip + complete paths
-- [x] All `alert()` and `window.confirm()` calls eliminated — replaced with toasts + modals
-
-### Phase C — New Pages
-
-- [x] `SettingsPage` — avatar colour picker (10 swatches), profile edit, password change, budget goal, 3-step delete gate
-- [x] `ReportsPage` — Bar + Line charts (Chart.js), 3M/6M/12M selector, Top 5 categories, savings rate pill
-- [x] `BudgetsPage` — month navigator, health strip, budget cards with progress bars, add/edit modal (upsert), delete
-- [x] `PUT /api/auth/profile` and `PUT /api/auth/password` backend endpoints
-
-### Phase D — Feature Additions
-
-- [x] Edit Transaction modal — pre-filled form, `PUT` on save, optimistic row update
-- [x] Delete Confirm modal — replaces `window.confirm`, styled portal dialog
-- [x] Search autocomplete — 300ms debounced `GET /titles?q=`, `onMouseDown` selection
-- [x] Date range filter — `from` / `to` props on `TransactionTable`, "This month" shortcut
-- [x] Recurring toggle in `TransactionForm` — pill switch + Daily/Weekly/Monthly selector
-- [x] Navbar updated — Reports, Budgets links + Settings via React Router `<Link>`
-- [x] Toast wired into login, register, logout, all CRUD operations
-
-### Phase E — Final Polish
-
-- [x] All routes present in `App.jsx` (`/settings`, `/reports`, `/budgets`)
-- [x] Onboarding wizard triggered on first dashboard visit (localStorage gate)
-- [x] Navbar settings link fixed to React Router `<Link>` (no hard page reload)
-- [x] Login + Register success toasts (`Welcome back, {name}!`, `Welcome to TrackWise!`)
-- [x] README fully updated with all endpoints, models, flows, and features
-
----
-
-## 🔧 Environment Variables
+## Environment Variables
 
 ```env
 # backend/.env
+
 PORT=5000
 NODE_ENV=development
 
-# MongoDB Atlas — replace with your connection string
-MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/expense_tracker?retryWrites=true&w=majority
+MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/expense_tracker
 
 # Generate with: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
-JWT_SECRET=your_64_char_random_secret_here
+JWT_SECRET=your_64_char_secret
 JWT_EXPIRE=7d
 
-# Vite frontend dev server URL
 CLIENT_ORIGIN=http://localhost:5173
+
+# https://aistudio.google.com/apikey
+GEMINI_API_KEY=your_gemini_api_key
+
+# https://console.cloud.google.com → APIs & Services → Credentials
+GOOGLE_CLIENT_ID=your_google_oauth_client_id
+
+# https://app.sendgrid.com → Settings → API Keys
+SENDGRID_API_KEY=your_sendgrid_api_key
+EMAIL_USER=your_verified_sender@example.com
+```
+
+```env
+# frontend/.env
+
+VITE_GOOGLE_CLIENT_ID=your_google_oauth_client_id
 ```
 
 ---
 
-## 📦 Dependencies
+## Future Improvements
 
-### Backend
+- [ ] Multi-currency support
+- [ ] Family / shared wallets
+- [ ] Offline mode with sync
+- [ ] AI anomaly detection (unusual spending alerts)
+- [ ] Docker + CI/CD pipeline
+- [ ] Mobile app (React Native)
 
-| Package            | Version | Purpose                           |
-| ------------------ | ------- | --------------------------------- |
-| express            | ^4.19   | HTTP framework                    |
-| mongoose           | ^8.4    | MongoDB ODM                       |
-| bcryptjs           | ^2.4    | Password hashing                  |
-| jsonwebtoken       | ^9.0    | JWT signing + verification        |
-| express-validator  | ^7.1    | Request body validation           |
-| express-rate-limit | ^7.3    | Auth route brute-force protection |
-| node-cron          | ^3.0    | Recurring transaction scheduler   |
-| cors               | ^2.8    | Cross-Origin Resource Sharing     |
-| dotenv             | ^16.4   | Environment variable loading      |
-| morgan             | ^1.10   | HTTP request logger               |
+---
 
-### Frontend
+## About
 
-| Package                    | Version     | Purpose                          |
-| -------------------------- | ----------- | -------------------------------- |
-| react + react-dom          | ^18.3       | UI framework                     |
-| react-router-dom           | ^6.24       | Client-side routing              |
-| axios                      | ^1.7        | HTTP client (global auth header) |
-| chart.js + react-chartjs-2 | ^4.4 / ^5.2 | Dashboard + Reports charts       |
-| lucide-react               | ^0.383      | Icon library                     |
-| tailwindcss                | ^3.4        | Utility-first CSS                |
-| vite                       | ^5.3        | Build tool + dev server          |
+Built and developed by [Prasanna Venkatesh](https://www.linkedin.com/in/prasannavenkatesh-s/) using the MERN stack and Gemini 3.1 Flash Lite to make expense tracking effortless.

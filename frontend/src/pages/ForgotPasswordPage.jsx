@@ -1,10 +1,15 @@
 /**
- * pages/ForgotPasswordPage.jsx  (Auth Upgrade — OTP Flow)
+ * pages/ForgotPasswordPage.jsx
  *
- * Flow:
- * 1. User enters their email address
- * 2. POST /api/auth/forgotpassword
- * 3. Redirect user to /reset-password?email=... to enter OTP
+ * Step 1 of the password reset flow:
+ *   User enters their email → POST /api/auth/forgotpassword
+ *   → backend generates an OTP, hashes it, and emails the plain code
+ *   → this page redirects to /reset-password?email=... where the user
+ *     enters the OTP and their new password
+ *
+ * The backend always returns the same generic success message whether or
+ * not the account exists - this prevents email enumeration attacks where
+ * someone could probe which addresses are registered.
  */
 
 import { useState } from 'react';
@@ -17,7 +22,7 @@ import {
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 
-// ── Background decoration ──────────────────────────────────────────────────────
+// --- Background decoration ----------------------------------------------------
 const BackgroundDecor = () => (
   <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden="true">
     <div
@@ -29,7 +34,7 @@ const BackgroundDecor = () => (
   </div>
 );
 
-// ── Main ForgotPasswordPage ────────────────────────────────────────────────────
+// --- ForgotPasswordPage -------------------------------------------------------
 const ForgotPasswordPage = () => {
   const { isDark, toggleTheme } = useTheme();
   const { toast }               = useToast();
@@ -58,12 +63,11 @@ const ForgotPasswordPage = () => {
 
     setIsSubmitting(true);
     try {
-      // POST /api/auth/forgotpassword
       await axios.post('/api/auth/forgotpassword', {
         email: email.trim().toLowerCase(),
       });
-      
-      // Navigate directly to the OTP input page with email in query string
+      // Always navigate to the OTP page regardless of whether the email exists -
+      // the backend never reveals whether an account was found (prevents enumeration)
       navigate(`/reset-password?email=${encodeURIComponent(email.trim().toLowerCase())}`);
     } catch (err) {
       const msg = err?.response?.data?.message || 'Something went wrong. Please try again.';
@@ -85,7 +89,7 @@ const ForgotPasswordPage = () => {
 
       <div className="relative w-full max-w-md">
 
-        {/* Brand mark */}
+        {/* Brand header */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-900 dark:bg-slate-700 shadow-lg mb-4 relative">
             <Wallet size={24} className="text-emerald-400" />
@@ -100,14 +104,13 @@ const ForgotPasswordPage = () => {
         </div>
 
         <article className="card space-y-5">
-
           <form onSubmit={handleSubmit} noValidate className="space-y-4">
 
-            {/* Email input */}
             <div>
               <label htmlFor="forgot-email" className="form-label">Email address</label>
               <div className="relative">
-                <Mail size={15}
+                <Mail
+                  size={15}
                   className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
                   aria-hidden="true"
                 />
@@ -134,7 +137,6 @@ const ForgotPasswordPage = () => {
               )}
             </div>
 
-            {/* Submit */}
             <button type="submit" disabled={isSubmitting} className="btn-primary w-full py-3 text-base">
               {isSubmitting
                 ? <><Loader2 size={17} className="animate-spin" />Sending code…</>
@@ -155,8 +157,7 @@ const ForgotPasswordPage = () => {
             </div>
           </div>
 
-          <Link to="/login"
-            className="btn-secondary w-full py-2.5 justify-center">
+          <Link to="/login" className="btn-secondary w-full py-2.5 justify-center">
             <ArrowLeft size={15} />
             Back to Sign In
           </Link>

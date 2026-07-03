@@ -1,34 +1,30 @@
 /**
  * models/Budget.js
  *
- * Mongoose Schema for per-category monthly Budget limits.
+ * Schema for per-category monthly budget limits.
  *
- * Each document represents ONE category budget for ONE user for ONE month.
- * This design allows users to set different limits per month and track
- * how actual spending (from Transaction documents) compares to the limit.
+ * Each document represents one category budget for one user for one month.
+ * That means if a user sets a Food budget for May and June, that's two
+ * separate documents - which makes querying and comparing months straightforward.
  *
  * Example document:
  *   {
- *     user_id:   ObjectId("..."),
- *     category:  "Food & Groceries",
- *     limit:     8000,
- *     month:     5,     // May
- *     year:      2025,
+ *     user_id:  ObjectId("..."),
+ *     category: "Food & Groceries",
+ *     limit:    8000,
+ *     month:    5,     // May
+ *     year:     2025,
  *   }
  *
- * The budgetController fetches matching Transaction aggregates and attaches
- * `spent` and `percentage` to each budget before returning to the frontend.
- *
- * MERN Data Flow:
- *   BudgetsPage → GET /api/budgets → budgetController.getBudgets()
- *   → Budget.find({ user_id }) + Transaction.aggregate(...)
- *   → merged array with { limit, spent, percentage } → React state → UI
+ * The actual `spent` and `percentage` fields aren't stored here -
+ * they're calculated on the fly by joining with the Transaction collection
+ * in the getBudgetsWithSpend static method below.
  */
 
 const mongoose = require("mongoose");
 const { TRANSACTION_CATEGORIES } = require("./Transaction");
 
-// ─── Schema ───────────────────────────────────────────────────────────────────
+// --- Schema -------------------------------------------------------------------
 const BudgetSchema = new mongoose.Schema(
   {
     user_id: {
@@ -47,14 +43,15 @@ const BudgetSchema = new mongoose.Schema(
       },
     },
 
-    // The spending limit in ₹ for this category this month
+    // The spending cap in ₹ for this category this month
     limit: {
       type: Number,
       required: [true, "Budget limit is required."],
       min: [1, "Budget limit must be at least ₹1."],
     },
 
-    // Month (1–12) and Year allow per-month budget tracking
+    // Storing month and year separately makes querying a specific month much easier
+    // than parsing date ranges every time
     month: {
       type: Number,
       required: [true, "Month is required."],
@@ -73,31 +70,35 @@ const BudgetSchema = new mongoose.Schema(
   },
 );
 
-// ─── Compound Unique Index ────────────────────────────────────────────────────
-// A user can have only ONE budget entry per category per month/year.
-// This prevents duplicates and allows safe upsert operations.
+// --- Compound Unique Index ----------------------------------------------------
+// A user can only have one budget per category per month/year.
+// This also makes it safe to do create-or-update in the controller
+// without having to check for duplicates manually first.
 BudgetSchema.index(
   { user_id: 1, category: 1, month: 1, year: 1 },
   { unique: true },
 );
 
-// ─── Static: getBudgetsWithSpend ──────────────────────────────────────────────
+// --- Static Method: getBudgetsWithSpend --------------------------------------
 /**
- * Fetches all budget documents for a user in a given month/year and
- * enriches each with actual spending data from the Transaction collection.
- * Performed in a single aggregation pipeline — no N+1 queries.
+ * Fetches all budget documents for a user in a given month/year,
+ * then calculates how much was actually spent in each category
+ * by aggregating matching Transaction documents.
+ *
+ * Doing this in one aggregation instead of querying per-budget
+ * so we don't hammer the DB with N separate queries.
  *
  * @param {ObjectId} userId
  * @param {number}   month  (1–12)
  * @param {number}   year
- * @returns {Promise<Array<BudgetWithSpend>>}
+ * @returns {Promise<Array>}
  *
- * Each returned object shape:
+ * Each item in the returned array looks like:
  * {
  *   _id, category, limit, month, year,
- *   spent:      number,  // actual ₹ spent in that category this month
- *   remaining:  number,  // limit - spent (can be negative if over budget)
- *   percentage: number,  // (spent / limit) * 100, capped at display level in frontend
+ *   spent:        number,   // total ₹ spent in that category this month
+ *   remaining:    number,   // limit - spent (negative means over budget)
+ *   percentage:   number,   // (spent / limit) * 100
  *   isOverBudget: boolean
  * }
  */
@@ -108,16 +109,16 @@ BudgetSchema.statics.getBudgetsWithSpend = async function (
 ) {
   const Transaction = mongoose.model("Transaction");
 
-  // 1. Fetch this user's budget documents for the given month/year
+  // Step 1: get all budget documents for this user/month/year
   const budgets = await this.find({ user_id: userId, month, year }).lean();
 
   if (budgets.length === 0) return [];
 
-  // 2. Build date range for the target month (start of month → end of month)
-  const startDate = new Date(year, month - 1, 1); // e.g., 2025-05-01 00:00:00
-  const endDate = new Date(year, month, 0, 23, 59, 59); // e.g., 2025-05-31 23:59:59
+  // Step 2: build a date range covering the full target month
+  const startDate = new Date(year, month - 1, 1); // e.g. 2025-05-01 00:00:00
+  const endDate = new Date(year, month, 0, 23, 59, 59); // e.g. 2025-05-31 23:59:59
 
-  // 3. Aggregate actual spend per category in this date range for this user
+  // Step 3: aggregate actual spend per category within that date range
   const spendByCategory = await Transaction.aggregate([
     {
       $match: {
@@ -134,16 +135,18 @@ BudgetSchema.statics.getBudgetsWithSpend = async function (
     },
   ]);
 
-  // 4. Create a quick lookup map: { 'Food & Groceries': 4200, ... }
+  // Step 4: turn the aggregation result into a plain lookup object
+  // so we can grab a category's spend in O(1) instead of searching the array each time
   const spendMap = {};
   spendByCategory.forEach((s) => {
     spendMap[s._id] = s.spent;
   });
 
-  // 5. Merge spending data into each budget document
+  // Step 5: merge the spend data into each budget document and calculate derived fields
   return budgets.map((budget) => {
     const spent = spendMap[budget.category] || 0;
     const remaining = budget.limit - spent;
+    // Rounding to 1 decimal place so the progress bar doesn't show weird floating point numbers
     const percentage =
       budget.limit > 0
         ? parseFloat(((spent / budget.limit) * 100).toFixed(1))
@@ -159,5 +162,5 @@ BudgetSchema.statics.getBudgetsWithSpend = async function (
   });
 };
 
-// ─── Export ───────────────────────────────────────────────────────────────────
+// --- Export -------------------------------------------------------------------
 module.exports = mongoose.model("Budget", BudgetSchema);

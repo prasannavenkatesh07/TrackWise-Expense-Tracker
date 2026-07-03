@@ -1,120 +1,108 @@
 /**
  * components/ToastContainer.jsx
  *
- * Animated Toast Notification Renderer
+ * Renders the global toast notification stack.
+ * Mounted once in App.jsx above all routes so it's always visible no matter
+ * which page is active.
  *
- * Reads the `toasts` array from ToastContext and renders each one as a
- * slide-in card anchored to the bottom-right corner of the viewport.
- * The container is rendered once in App.jsx above all routes so it's
- * always visible regardless of which page is active.
+ * Each toast looks like this:
+ *   ┌---------------------------------------------┐
+ *   │  [Icon]  Title (bold)            [× dismiss]│
+ *   │          Message body text                  │
+ *   │  ██████████░░░░░ progress bar               │
+ *   └---------------------------------------------┘
  *
- * Visual Anatomy of a Toast:
- *   ┌──────────────────────────────────────────────┐
- *   │  [Icon]  Title (bold)             [× dismiss]│
- *   │          Message body text                   │
- *   │  ████████████░░░░░░░ progress bar            │
- *   └──────────────────────────────────────────────┘
- *
- * Type → colour mapping (matches index.css design tokens):
+ * Type → colour mapping:
  *   success → emerald
  *   error   → rose
  *   warning → amber
  *   info    → blue
  *
- * Animation Strategy:
- *   - Entry: CSS translate + opacity transition (slide up from bottom-right)
- *   - Exit:  Same transition in reverse via the `removing` class
- *   - The progress bar depletes over `duration` ms using a CSS animation
- *     driven by a CSS variable `--toast-duration` set as an inline style.
- *   - All transitions are CSS-only — no animation library needed.
+ * Animation approach:
+ *   Entry and exit are pure CSS - no animation library needed.
+ *   The progress bar depletes using a CSS @keyframe animation whose duration
+ *   matches the toast's auto-dismiss timeout.
+ *   The keyframes are injected once into <head> on first mount via a
+ *   self-contained helper so there's no separate CSS file to maintain.
  *
  * Accessibility:
- *   - role="status" + aria-live="polite" for success/info
- *   - role="alert"  + aria-live="assertive" for error/warning
- *   - Each toast has a visible dismiss button with aria-label
- *   - Focus is NOT moved to the toast (would be disruptive mid-form)
+ *   success/info → role="status"  + aria-live="polite"
+ *   error/warning → role="alert" + aria-live="assertive"
+ *   Each toast has a visible dismiss button with an aria-label.
+ *
+ * createPortal is used so the stack always floats above everything -
+ * modals, navbars, dropdowns - regardless of z-index stacking contexts.
  */
 
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import {
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  Info,
-  X,
-} from 'lucide-react';
+import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-react';
 import { useToast } from '../context/ToastContext';
 
-// ── Type Configuration Map ─────────────────────────────────────────────────────
+// --- Type config --------------------------------------------------------------
 const TYPE_CONFIG = {
   success: {
-    Icon:         CheckCircle2,
-    iconClass:    'text-emerald-500',
-    borderClass:  'border-l-emerald-500',
-    bgClass:      'bg-white dark:bg-slate-800',
-    titleClass:   'text-emerald-700 dark:text-emerald-400',
-    barClass:     'bg-emerald-500',
-    ariaRole:     'status',
-    ariaLive:     'polite',
+    Icon:        CheckCircle2,
+    iconClass:   'text-emerald-500',
+    borderClass: 'border-l-emerald-500',
+    bgClass:     'bg-white dark:bg-slate-800',
+    titleClass:  'text-emerald-700 dark:text-emerald-400',
+    barClass:    'bg-emerald-500',
+    ariaRole:    'status',
+    ariaLive:    'polite',
   },
   error: {
-    Icon:         XCircle,
-    iconClass:    'text-rose-500',
-    borderClass:  'border-l-rose-500',
-    bgClass:      'bg-white dark:bg-slate-800',
-    titleClass:   'text-rose-700 dark:text-rose-400',
-    barClass:     'bg-rose-500',
-    ariaRole:     'alert',
-    ariaLive:     'assertive',
+    Icon:        XCircle,
+    iconClass:   'text-rose-500',
+    borderClass: 'border-l-rose-500',
+    bgClass:     'bg-white dark:bg-slate-800',
+    titleClass:  'text-rose-700 dark:text-rose-400',
+    barClass:    'bg-rose-500',
+    ariaRole:    'alert',
+    ariaLive:    'assertive',
   },
   warning: {
-    Icon:         AlertTriangle,
-    iconClass:    'text-amber-500',
-    borderClass:  'border-l-amber-500',
-    bgClass:      'bg-white dark:bg-slate-800',
-    titleClass:   'text-amber-700 dark:text-amber-400',
-    barClass:     'bg-amber-500',
-    ariaRole:     'alert',
-    ariaLive:     'assertive',
+    Icon:        AlertTriangle,
+    iconClass:   'text-amber-500',
+    borderClass: 'border-l-amber-500',
+    bgClass:     'bg-white dark:bg-slate-800',
+    titleClass:  'text-amber-700 dark:text-amber-400',
+    barClass:    'bg-amber-500',
+    ariaRole:    'alert',
+    ariaLive:    'assertive',
   },
   info: {
-    Icon:         Info,
-    iconClass:    'text-blue-500',
-    borderClass:  'border-l-blue-500',
-    bgClass:      'bg-white dark:bg-slate-800',
-    titleClass:   'text-blue-700 dark:text-blue-400',
-    barClass:     'bg-blue-500',
-    ariaRole:     'status',
-    ariaLive:     'polite',
+    Icon:        Info,
+    iconClass:   'text-blue-500',
+    borderClass: 'border-l-blue-500',
+    bgClass:     'bg-white dark:bg-slate-800',
+    titleClass:  'text-blue-700 dark:text-blue-400',
+    barClass:    'bg-blue-500',
+    ariaRole:    'status',
+    ariaLive:    'polite',
   },
 };
 
-// ── Progress Bar ───────────────────────────────────────────────────────────────
-/**
- * A thin bar at the bottom of the toast that depletes over `duration` ms.
- * Implemented as a CSS animation: width goes from 100% → 0 over the duration.
- * `--toast-duration` is a CSS variable set as an inline style.
- *
- * We inject the keyframe once via a <style> tag in the component tree.
- */
+// --- Progress bar -------------------------------------------------------------
+// Shrinks from full width to zero over `duration` ms using a CSS animation.
+// Sticky toasts (duration === 0) don't show a bar at all.
 const ProgressBar = ({ duration, colorClass }) => {
-  if (!duration || duration === 0) return null; // Sticky toasts have no bar
-
+  if (!duration || duration === 0) return null;
   return (
     <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-slate-100 dark:bg-slate-700 overflow-hidden rounded-b-xl">
       <div
         className={`h-full ${colorClass} origin-left`}
-        style={{
-          animation: `toast-deplete ${duration}ms linear forwards`,
-        }}
+        style={{ animation: `toast-deplete ${duration}ms linear forwards` }}
         aria-hidden="true"
       />
     </div>
   );
 };
 
-// Inject the keyframe once (appended to <head> on first mount)
+// --- Keyframe injection -------------------------------------------------------
+// Appended to <head> exactly once so we don't add a separate stylesheet.
+// The IIFE + `injected` flag makes sure it's idempotent even in strict mode's
+// double-invoke of effects.
 const injectToastKeyframe = (() => {
   let injected = false;
   return () => {
@@ -141,19 +129,17 @@ const injectToastKeyframe = (() => {
   };
 })();
 
-// ── Single Toast Card ─────────────────────────────────────────────────────────
+// --- Single toast card --------------------------------------------------------
 const ToastCard = ({ toast, onRemove }) => {
   const config = TYPE_CONFIG[toast.type] || TYPE_CONFIG.info;
   const { Icon, iconClass, borderClass, bgClass, titleClass, barClass, ariaRole, ariaLive } = config;
 
-  // Track whether this toast is in its exit animation phase
   const [isExiting, setIsExiting] = useState(false);
 
-  // Trigger the slide-out animation, then actually remove from DOM
+  // Trigger the CSS exit animation, then remove from context after it finishes
   const handleDismiss = () => {
     setIsExiting(true);
-    // Wait for the CSS exit animation to finish before removing from context
-    setTimeout(() => onRemove(toast.id), 210);
+    setTimeout(() => onRemove(toast.id), 210); // matches toast-slide-out duration
   };
 
   return (
@@ -162,29 +148,17 @@ const ToastCard = ({ toast, onRemove }) => {
       aria-live={ariaLive}
       aria-atomic="true"
       className={[
-        // Layout
         'relative w-80 max-w-[calc(100vw-2rem)] overflow-hidden',
-        // Shape & border
         `rounded-xl border border-l-4 ${borderClass}`,
         'border-slate-200 dark:border-slate-700',
-        // Background & shadow
         `${bgClass} shadow-card-hover`,
-        // Padding
         'px-4 py-3.5',
-        // Animation class
         isExiting ? 'toast-exit' : 'toast-enter',
       ].join(' ')}
     >
-      {/* Content row */}
       <div className="flex items-start gap-3">
-        {/* Type icon */}
-        <Icon
-          size={18}
-          className={`${iconClass} flex-shrink-0 mt-0.5`}
-          aria-hidden="true"
-        />
+        <Icon size={18} className={`${iconClass} flex-shrink-0 mt-0.5`} aria-hidden="true" />
 
-        {/* Text content */}
         <div className="flex-1 min-w-0 pr-2">
           {toast.title && (
             <p className={`text-sm font-bold leading-tight mb-0.5 ${titleClass}`}>
@@ -196,7 +170,6 @@ const ToastCard = ({ toast, onRemove }) => {
           </p>
         </div>
 
-        {/* Dismiss button */}
         <button
           onClick={handleDismiss}
           aria-label="Dismiss notification"
@@ -211,25 +184,19 @@ const ToastCard = ({ toast, onRemove }) => {
         </button>
       </div>
 
-      {/* Depleting progress bar */}
       <ProgressBar duration={toast.duration} colorClass={barClass} />
     </div>
   );
 };
 
-// ── Toast Container ────────────────────────────────────────────────────────────
-/**
- * Rendered once in App.jsx above all routes.
- * Uses React.createPortal to mount the stack directly to <body> so it
- * floats above all z-index stacking contexts (modals, navbars, etc.).
- *
- * Stack position: bottom-right on desktop, bottom-full-width on mobile.
- * Newest toasts appear at the bottom of the stack.
- */
+// --- Toast container ----------------------------------------------------------
+// Mounted once in App.jsx. Uses createPortal to render directly on <body> so
+// it floats above every other z-index stacking context on the page.
+// Newest toasts appear at the bottom of the stack (natural array order).
 const ToastContainer = () => {
   const { toasts, removeToast } = useToast();
 
-  // Inject CSS keyframes once on first render
+  // Inject the CSS keyframes once on first render
   const keyframesInjected = useRef(false);
   useEffect(() => {
     if (!keyframesInjected.current) {
@@ -241,19 +208,13 @@ const ToastContainer = () => {
   if (toasts.length === 0) return null;
 
   return createPortal(
-    // Fixed position stack — bottom-right, above everything (z-[9999])
     <div
       className="fixed bottom-5 right-5 z-[9999] flex flex-col gap-2 items-end"
       aria-label="Notifications"
-      // Prevent clicks on the container from bubbling
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()} // stop clicks bubbling to the page behind
     >
       {toasts.map((toast) => (
-        <ToastCard
-          key={toast.id}
-          toast={toast}
-          onRemove={removeToast}
-        />
+        <ToastCard key={toast.id} toast={toast} onRemove={removeToast} />
       ))}
     </div>,
     document.body

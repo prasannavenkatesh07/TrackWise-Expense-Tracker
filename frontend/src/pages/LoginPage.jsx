@@ -1,18 +1,23 @@
 /**
- * pages/LoginPage.jsx  (Auth Upgrade — Phase 4)
+ * pages/LoginPage.jsx
  *
- * Changes from previous version:
- * ✦ Google Sign-In button via <GoogleLogin /> from @react-oauth/google
- * ✦ "OR" divider between Google button and email/password form
- * ✦ "EMAIL_NOT_VERIFIED" error code shows a specific resend-verification hint
- * ✦ "Forgot password?" link now navigates to /forgot-password
- * ✦ Automatic redirect to /verify-email on unverified login attempt
- * ✦ All existing validation, show/hide toggle, dark mode unchanged
+ * Two-path login:
+ *   Path A - Google OAuth: GoogleLogin button → loginWithGoogle() in AuthContext
+ *             → POST /api/auth/google-login → verify ID token → return app JWT
+ *   Path B - Email/password: form → POST /api/auth/login → return JWT
+ *
+ * Special case - EMAIL_NOT_VERIFIED:
+ *   If the backend returns a 403 with code: 'EMAIL_NOT_VERIFIED', we show
+ *   a banner with a direct link to /verify-email?email=... rather than a
+ *   generic error message. This guides the user to the right next step.
+ *
+ * After a successful login, the user is sent to wherever they came from
+ * (via React Router's location.state.from) or /dashboard as the default.
  */
 
 import { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { GoogleLogin } from '@react-oauth/google';          // ✦ Auth Upgrade
+import { GoogleLogin } from '@react-oauth/google';
 import axios from 'axios';
 import {
   Mail, Lock, Eye, EyeOff, Loader2,
@@ -22,7 +27,7 @@ import { useAuth }  from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 
-// ── Field error ────────────────────────────────────────────────────────────────
+// --- Field error --------------------------------------------------------------
 const FieldError = ({ message }) =>
   message ? (
     <p className="flex items-center gap-1.5 text-xs text-rose-500 mt-1.5 font-medium" role="alert">
@@ -31,7 +36,7 @@ const FieldError = ({ message }) =>
     </p>
   ) : null;
 
-// ── Background decoration ──────────────────────────────────────────────────────
+// --- Background decoration ----------------------------------------------------
 const BackgroundDecor = () => (
   <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden="true">
     <div className="absolute inset-0 opacity-[0.025] dark:opacity-[0.04]"
@@ -41,7 +46,7 @@ const BackgroundDecor = () => (
   </div>
 );
 
-// ── OR Divider ─────────────────────────────────────────────────────────────────
+// --- OR divider ---------------------------------------------------------------
 const OrDivider = () => (
   <div className="relative my-5">
     <div className="absolute inset-0 flex items-center" aria-hidden="true">
@@ -55,29 +60,30 @@ const OrDivider = () => (
   </div>
 );
 
-// ── Main LoginPage ─────────────────────────────────────────────────────────────
+// --- LoginPage ----------------------------------------------------------------
 const LoginPage = () => {
   const { login, loginWithGoogle } = useAuth();
   const { isDark, toggleTheme }    = useTheme();
   const { toast }                  = useToast();
   const navigate  = useNavigate();
   const location  = useLocation();
+  // Redirect back to the page the user was trying to reach, or /dashboard
   const from      = location.state?.from?.pathname || '/dashboard';
 
-  const [form,         setForm]         = useState({ email: '', password: '' });
-  const [errors,       setErrors]       = useState({});
-  const [apiError,     setApiError]     = useState('');
-  const [notVerified,  setNotVerified]  = useState(false); // ✦ special state for unverified
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [form,          setForm]          = useState({ email: '', password: '' });
+  const [errors,        setErrors]        = useState({});
+  const [apiError,      setApiError]      = useState('');
+  const [notVerified,   setNotVerified]   = useState(false); // true = EMAIL_NOT_VERIFIED response
+  const [isSubmitting,  setIsSubmitting]  = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
+  const [showPassword,  setShowPassword]  = useState(false);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setForm(p => ({ ...p, [name]: value }));
-    if (errors[name])    setErrors(p => ({ ...p, [name]: '' }));
-    if (apiError)        setApiError('');
-    if (notVerified)     setNotVerified(false);
+    if (errors[name])  setErrors(p => ({ ...p, [name]: '' }));
+    if (apiError)      setApiError('');
+    if (notVerified)   setNotVerified(false);
   };
 
   const validate = () => {
@@ -89,7 +95,7 @@ const LoginPage = () => {
     return Object.keys(e).length === 0;
   };
 
-  // ── Standard email/password submit ────────────────────────────────────────
+  // --- Standard email/password login ---------------------------------------
   const handleSubmit = async (e) => {
     e.preventDefault();
     setApiError('');
@@ -108,38 +114,28 @@ const LoginPage = () => {
         navigate(from, { replace: true });
       }
     } catch (err) {
-      // ✦ Special handling: backend sends code: 'EMAIL_NOT_VERIFIED' on 403
+      // EMAIL_NOT_VERIFIED is a special 403 case - show a targeted banner
+      // with a link to the verification page instead of a generic error
       if (err?.response?.data?.code === 'EMAIL_NOT_VERIFIED') {
         setNotVerified(true);
-        toast.error("Please enter your OTP to verify your account.");
-        //navigate(`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`);
-        //return;
+        toast.error('Please enter your OTP to verify your account.');
       } else {
         setApiError(err?.response?.data?.message || 'Login failed. Please check your credentials.');
       }
-    } finally {
-      setIsSubmitting(false);
-    }
+    } finally { setIsSubmitting(false); }
   };
 
-  // ── Google Sign-In success ─────────────────────────────────────────────────
-  /**
-   * @react-oauth/google calls onSuccess with { credential: '<Google ID token>' }
-   * We pass that token to loginWithGoogle() in AuthContext which POSTs it to
-   * /api/auth/google-login, gets back our own JWT, and persists the session.
-   */
+  // --- Google Sign-In -------------------------------------------------------
   const handleGoogleSuccess = async (credentialResponse) => {
     setGoogleLoading(true);
     setApiError('');
     try {
       const user = await loginWithGoogle(credentialResponse.credential);
-      toast.success(`Welcome, ${user.name.split(' ')[0]}! 👋`, 'Signed in with Google');
+      toast.success(`Welcome back, ${user.name.split(' ')[0]}! 👋`, 'Signed in with Google');
       navigate(from, { replace: true });
     } catch (err) {
       setApiError(err?.response?.data?.message || err?.message || 'Google sign-in failed. Please try again.');
-    } finally {
-      setGoogleLoading(false);
-    }
+    } finally { setGoogleLoading(false); }
   };
 
   const handleGoogleError = () => {
@@ -170,7 +166,7 @@ const LoginPage = () => {
 
         <article className="card">
 
-          {/* ── ✦ Google Sign-In button ─────────────────────────────────── */}
+          {/* Google Sign-In */}
           <div className="w-full">
             {googleLoading ? (
               <div className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm text-slate-500 dark:text-slate-400">
@@ -178,17 +174,14 @@ const LoginPage = () => {
                 Signing in with Google…
               </div>
             ) : (
-              /*
-                Hardcoded width attribute removed here.
-                This allows the button to dynamically size to fit mobile containers perfectly.
-              */
-              <div className="flex justify-center">
+              /* The [&>div]:w-full hack forces the Google iframe to stretch full width */
+              <div className="flex justify-center w-full [&>div]:w-full [&_iframe]:!w-full">
                 <GoogleLogin
                   onSuccess={handleGoogleSuccess}
                   onError={handleGoogleError}
                   useOneTap={false}
                   theme={isDark ? 'filled_black' : 'outline'}
-                  shape="rectangular"
+                  shape="pill"
                   size="large"
                   text="signin_with"
                 />
@@ -198,17 +191,17 @@ const LoginPage = () => {
 
           <OrDivider />
 
-          {/* ── Standard email/password form ─────────────────────────────── */}
+          {/* Email/password form */}
           <form onSubmit={handleSubmit} noValidate className="space-y-5">
 
-            {/* API error banner */}
+            {/* Generic API error */}
             {apiError && (
               <div className="alert-danger text-xs animate-slide-down" role="alert">
                 <AlertCircle size={15} className="flex-shrink-0" />{apiError}
               </div>
             )}
 
-            {/* ✦ Email-not-verified banner with action link */}
+            {/* Email-not-verified banner - more helpful than a generic error */}
             {notVerified && (
               <div className="alert-warning text-xs animate-slide-down" role="alert">
                 <AlertCircle size={15} className="flex-shrink-0 mt-0.5" />
@@ -216,7 +209,10 @@ const LoginPage = () => {
                   <p className="font-semibold">Email not verified</p>
                   <p className="mt-0.5">
                     Please check your inbox for the 6-digit code.{' '}
-                    <Link to={`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`} className="underline font-medium hover:text-amber-800">
+                    <Link
+                      to={`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`}
+                      className="underline font-medium hover:text-amber-800"
+                    >
                       Click here to verify your account.
                     </Link>
                   </p>
@@ -228,7 +224,7 @@ const LoginPage = () => {
             <div>
               <label htmlFor="login-email" className="form-label">Email address</label>
               <div className="relative">
-                <Mail size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <Mail size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
                 <input id="login-email" name="email" type="email" autoComplete="email"
                   value={form.email} onChange={handleChange} placeholder="you@example.com"
                   className={`input-field pl-10 ${errors.email ? 'border-rose-400 focus:ring-rose-400' : ''}`}
@@ -241,17 +237,17 @@ const LoginPage = () => {
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label htmlFor="login-password" className="form-label mb-0">Password</label>
-                {/* ✦ Now links to the real forgot-password page */}
                 <Link to="/forgot-password"
                   className="text-xs text-emerald-500 hover:text-emerald-600 dark:text-emerald-400 font-semibold transition-colors">
                   Forgot password?
                 </Link>
               </div>
               <div className="relative">
-                <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                <input id="login-password" name="password" type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password" value={form.password} onChange={handleChange}
-                  placeholder="••••••••"
+                <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
+                <input id="login-password" name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  value={form.password} onChange={handleChange} placeholder="••••••••"
                   className={`input-field pl-10 pr-11 ${errors.password ? 'border-rose-400 focus:ring-rose-400' : ''}`}
                   aria-invalid={!!errors.password} />
                 <button type="button" onClick={() => setShowPassword(p => !p)}
@@ -266,11 +262,12 @@ const LoginPage = () => {
             <button type="submit" disabled={isSubmitting} className="btn-primary w-full py-3 text-base mt-2">
               {isSubmitting
                 ? <><Loader2 size={17} className="animate-spin" />Signing in…</>
-                : <>Sign in<ArrowRight size={17} /></>}
+                : <>Sign in<ArrowRight size={17} /></>
+              }
             </button>
           </form>
 
-          {/* Register link */}
+          {/* Link to registration */}
           <div className="relative my-5">
             <div className="absolute inset-0 flex items-center" aria-hidden="true">
               <div className="w-full border-t border-slate-100 dark:border-slate-700" />

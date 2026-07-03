@@ -1,48 +1,39 @@
 /**
  * pages/NotFoundPage.jsx
  *
- * 404 — Page Not Found
+ * 404 page - rendered by the wildcard route `path="*"` in App.jsx.
  *
- * Rendered by the wildcard route `path="*"` in App.jsx when no defined
- * route matches the current URL.
+ * Shows a contextual message depending on whether the user is logged in:
+ *   Authenticated → "Back to Dashboard" button + quick nav links
+ *   Anonymous     → "Back to Login" button
  *
- * Features:
- *   - Animated 404 display with a subtle glitch / pulse effect
- *   - Contextual message depending on whether the user is authenticated
- *   - Back to Dashboard (if logged in) or Back to Login (if not)
- *   - Quick navigation links to valid pages
- *   - Fully dark-mode aware using Tailwind dark: variants
- *   - Decorative background pattern consistent with the auth pages
+ * Auto-redirects after a 10-second countdown, to the appropriate destination.
+ * The countdown is a nice UX touch that also helps during demos if someone
+ * accidentally navigates to a broken URL.
  */
 
 import { Link, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import {
-  Home,
-  History,
-  ArrowLeft,
-  Wallet,
-  MapPin,
-  LayoutDashboard,
+  Home, History, ArrowLeft,
+  Wallet, MapPin, LayoutDashboard,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
-// ── Decorative background — matches auth pages for visual consistency ─────────
+// --- Background decoration ----------------------------------------------------
+// Same dot-grid pattern as the auth pages for visual consistency
 const BackgroundDecor = () => (
   <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden="true">
     <div
       className="absolute inset-0 opacity-[0.025] dark:opacity-[0.04]"
-      style={{
-        backgroundImage: 'radial-gradient(circle, #10b981 1px, transparent 1px)',
-        backgroundSize: '28px 28px',
-      }}
+      style={{ backgroundImage: 'radial-gradient(circle, #10b981 1px, transparent 1px)', backgroundSize: '28px 28px' }}
     />
     <div className="absolute top-0 left-1/4 w-96 h-96 bg-rose-400/10 dark:bg-rose-500/8 rounded-full blur-3xl" />
     <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-emerald-400/10 dark:bg-emerald-500/8 rounded-full blur-3xl" />
   </div>
 );
 
-// ── Quick Nav Link ─────────────────────────────────────────────────────────────
+// --- Quick nav link -----------------------------------------------------------
 const QuickLink = ({ to, icon: Icon, label }) => (
   <Link
     to={to}
@@ -64,11 +55,8 @@ const QuickLink = ({ to, icon: Icon, label }) => (
   </Link>
 );
 
-// ── Animated 404 Digits ────────────────────────────────────────────────────────
-/**
- * Renders the three digits "4", "0", "4" with staggered fade-in animations
- * and a gentle pulse on the "0" to draw the eye.
- */
+// --- Animated 404 digits ------------------------------------------------------
+// Staggered fade-in on mount, gentle pulse on the middle "0" to draw the eye
 const AnimatedCode = () => {
   const digits = ['4', '0', '4'];
   return (
@@ -93,21 +81,20 @@ const AnimatedCode = () => {
   );
 };
 
-// ── Main NotFoundPage ──────────────────────────────────────────────────────────
+// --- NotFoundPage -------------------------------------------------------------
 const NotFoundPage = () => {
   const { isAuthenticated } = useAuth();
   const navigate = useNavigate();
 
-  // Track how long the user has been on this page — for the "auto-redirect" hint
+  // Count down from 10 then auto-navigate - stops if the user clicks manually
   const [countdown, setCountdown] = useState(10);
 
-  // Count down from 10, then navigate home automatically
   useEffect(() => {
     if (countdown <= 0) {
       navigate(isAuthenticated ? '/dashboard' : '/login', { replace: true });
       return;
     }
-    const timer = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
     return () => clearTimeout(timer);
   }, [countdown, navigate, isAuthenticated]);
 
@@ -121,7 +108,7 @@ const NotFoundPage = () => {
 
       <div className="relative z-10 w-full max-w-md text-center space-y-6">
 
-        {/* ── Brand mark ─────────────────────────────────────────────── */}
+        {/* Logo - links back to the right place */}
         <Link
           to={isAuthenticated ? '/dashboard' : '/login'}
           className="inline-flex items-center gap-2 mb-2 group"
@@ -135,10 +122,9 @@ const NotFoundPage = () => {
           </span>
         </Link>
 
-        {/* ── 404 Digits ─────────────────────────────────────────────── */}
         <AnimatedCode />
 
-        {/* ── Heading + description ────────────────────────────────────── */}
+        {/* Heading */}
         <div className="space-y-2 animate-fade-in" style={{ animationDelay: '200ms', animationFillMode: 'both' }}>
           <div className="flex items-center justify-center gap-2">
             <MapPin size={16} className="text-rose-400 flex-shrink-0" aria-hidden="true" />
@@ -151,7 +137,7 @@ const NotFoundPage = () => {
           </p>
         </div>
 
-        {/* ── Primary CTA ────────────────────────────────────────────── */}
+        {/* Primary CTA */}
         <div className="animate-fade-in" style={{ animationDelay: '300ms', animationFillMode: 'both' }}>
           <Link
             to={isAuthenticated ? '/dashboard' : '/login'}
@@ -162,7 +148,7 @@ const NotFoundPage = () => {
           </Link>
         </div>
 
-        {/* ── Quick navigation ────────────────────────────────────────── */}
+        {/* Quick nav - only shown to logged-in users */}
         {isAuthenticated && (
           <nav
             aria-label="Suggested pages"
@@ -179,14 +165,14 @@ const NotFoundPage = () => {
           </nav>
         )}
 
-        {/* ── Auto-redirect countdown ──────────────────────────────────── */}
+        {/* Countdown */}
         <p
           className="text-xs text-slate-400 dark:text-slate-600 animate-fade-in"
           style={{ animationDelay: '500ms', animationFillMode: 'both' }}
           aria-live="polite"
           aria-atomic="true"
         >
-          Redirecting you automatically in{' '}
+          Redirecting automatically in{' '}
           <span className="font-numeric font-bold text-emerald-500 dark:text-emerald-400">
             {countdown}s
           </span>
@@ -198,4 +184,3 @@ const NotFoundPage = () => {
 };
 
 export default NotFoundPage;
-

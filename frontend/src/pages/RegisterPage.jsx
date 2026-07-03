@@ -1,9 +1,21 @@
 /**
- * pages/RegisterPage.jsx  (Auth Upgrade — OTP Flow)
+ * pages/RegisterPage.jsx
  *
- * Changes:
- * ✦ Google Sign-Up button at the top via <GoogleLogin />
- * ✦ Standard email sign-up now routes to the OTP Verification page
+ * Two-path registration:
+ *   Path A - Google OAuth: GoogleLogin button → POST /api/auth/google-login
+ *             → backend verifies the ID token, auto-creates the account if new,
+ *               and returns our own app JWT
+ *   Path B - Email/password: form → POST /api/auth/register
+ *             → backend creates the account in an unverified state and emails a
+ *               6-digit OTP → redirect to /verify-email?email=... to confirm it
+ *
+ * Validation mirrors the backend express-validator rules so the user sees
+ * errors before the request is even sent.
+ *
+ * The password strength indicator is purely cosmetic - it's a visual hint,
+ * not a hard block. The backend still enforces the 6-character minimum.
+ *
+ * TODO: add a proper zxcvbn-style strength check instead of the length-based one
  */
 
 import { useState } from 'react';
@@ -11,15 +23,15 @@ import { Link, useNavigate } from 'react-router-dom';
 import { GoogleLogin } from '@react-oauth/google';
 import axios from 'axios';
 import {
-  User, Mail, Lock, Eye, EyeOff, Loader2,
-  Wallet, ArrowRight, AlertCircle,
-  CheckCircle2, IndianRupee, Sun, Moon,
+  Mail, Lock, Eye, EyeOff, User,
+  Loader2, Wallet, ArrowRight, AlertCircle,
+  Sun, Moon, CheckCircle2, IndianRupee,
 } from 'lucide-react';
 import { useAuth }  from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 
-// ── Field error ────────────────────────────────────────────────────────────────
+// --- Field error --------------------------------------------------------------
 const FieldError = ({ message }) =>
   message ? (
     <p className="flex items-center gap-1.5 text-xs text-rose-500 mt-1.5 font-medium" role="alert">
@@ -28,17 +40,17 @@ const FieldError = ({ message }) =>
     </p>
   ) : null;
 
-// ── Background decoration ──────────────────────────────────────────────────────
+// --- Background decoration ----------------------------------------------------
 const BackgroundDecor = () => (
   <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden="true">
     <div className="absolute inset-0 opacity-[0.025] dark:opacity-[0.04]"
       style={{ backgroundImage: 'radial-gradient(circle, #10b981 1px, transparent 1px)', backgroundSize: '28px 28px' }} />
-    <div className="absolute -top-40 -right-32 w-96 h-96 bg-emerald-400/10 dark:bg-emerald-500/10 rounded-full blur-3xl" />
-    <div className="absolute -bottom-40 -left-32 w-96 h-96 bg-violet-400/10 dark:bg-violet-500/10 rounded-full blur-3xl" />
+    <div className="absolute -top-32 -right-32 w-96 h-96 bg-emerald-400/10 dark:bg-emerald-500/10 rounded-full blur-3xl" />
+    <div className="absolute -bottom-32 -left-32 w-96 h-96 bg-blue-400/10 dark:bg-blue-500/10 rounded-full blur-3xl" />
   </div>
 );
 
-// ── OR Divider ─────────────────────────────────────────────────────────────────
+// --- OR divider ---------------------------------------------------------------
 const OrDivider = () => (
   <div className="relative my-5">
     <div className="absolute inset-0 flex items-center" aria-hidden="true">
@@ -52,47 +64,59 @@ const OrDivider = () => (
   </div>
 );
 
-// ── Password strength meter ────────────────────────────────────────────────────
+// --- Password strength indicator ----------------------------------------------
+// Three segments: < 6 chars = red, 6–9 = amber, 10+ with mixed chars = green
+// Purely visual - the backend enforces the real rules
 const PasswordStrength = ({ password }) => {
   if (!password) return null;
-  const checks  = [password.length >= 8, /[A-Z]/.test(password), /[0-9]/.test(password), /[^a-zA-Z0-9]/.test(password)];
-  const score   = checks.filter(Boolean).length;
-  const configs = {
-    0: { label: 'Too weak',  color: 'bg-rose-500',    text: 'text-rose-500',    filled: 1 },
-    1: { label: 'Weak',      color: 'bg-rose-400',    text: 'text-rose-400',    filled: 1 },
-    2: { label: 'Fair',      color: 'bg-amber-400',   text: 'text-amber-500',   filled: 2 },
-    3: { label: 'Good',      color: 'bg-blue-400',    text: 'text-blue-500',    filled: 3 },
-    4: { label: 'Strong',    color: 'bg-emerald-500', text: 'text-emerald-500', filled: 4 },
-  };
-  const { label, color, text, filled } = configs[score];
+
+  const hasUpper   = /[A-Z]/.test(password);
+  const hasNumber  = /\d/.test(password);
+  const hasSpecial = /[!@#$%^&*(),.?":{}|<>]/.test(password);
+  const len        = password.length;
+
+  const strength =
+    len >= 10 && hasUpper && hasNumber && hasSpecial ? 3 :
+    len >= 8  && (hasUpper || hasNumber)             ? 2 :
+    len >= 6                                         ? 1 : 0;
+
+  const config = [
+    { label: 'Weak',   color: 'bg-rose-500',   text: 'text-rose-500'   },
+    { label: 'Fair',   color: 'bg-amber-400',  text: 'text-amber-500'  },
+    { label: 'Good',   color: 'bg-amber-400',  text: 'text-amber-500'  },
+    { label: 'Strong', color: 'bg-emerald-500', text: 'text-emerald-500' },
+  ][strength];
+
   return (
-    <div className="mt-2 space-y-1.5" aria-label={`Password strength: ${label}`}>
-      <div className="flex gap-1" aria-hidden="true">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${i < filled ? color : 'bg-slate-200 dark:bg-slate-700'}`} />
+    <div className="mt-2 space-y-1" aria-label={`Password strength: ${config.label}`}>
+      <div className="flex gap-1">
+        {[0, 1, 2].map(i => (
+          <div key={i}
+            className={`h-1 flex-1 rounded-full transition-all duration-300 ${i <= strength - 1 ? config.color : 'bg-slate-200 dark:bg-slate-600'}`}
+          />
         ))}
       </div>
-      <p className={`text-xs font-semibold ${text}`}>{label}</p>
+      <p className={`text-[10px] font-semibold ${config.text}`}>{config.label} password</p>
     </div>
   );
 };
 
-// ── Main RegisterPage ──────────────────────────────────────────────────────────
+// --- RegisterPage -------------------------------------------------------------
 const RegisterPage = () => {
-  const { loginWithGoogle }       = useAuth();
-  const { isDark, toggleTheme }   = useTheme();
-  const { toast }                 = useToast();
-  const navigate                  = useNavigate();
+  const { loginWithGoogle } = useAuth();
+  const { isDark, toggleTheme } = useTheme();
+  const { toast }  = useToast();
+  const navigate   = useNavigate();
 
   const [form, setForm] = useState({
-    name: '', email: '', password: '', confirmPassword: '', monthlyBudget: '50000',
+    name: '', email: '', password: '', confirmPassword: '', monthlyBudget: '',
   });
-  const [errors,        setErrors]        = useState({});
-  const [apiError,      setApiError]      = useState('');
-  const [isSubmitting,  setIsSubmitting]  = useState(false);
-  const [googleLoading, setGoogleLoading] = useState(false);
-  const [showPassword,  setShowPassword]  = useState(false);
-  const [showConfirm,   setShowConfirm]   = useState(false);
+  const [errors,         setErrors]         = useState({});
+  const [apiError,       setApiError]       = useState('');
+  const [isSubmitting,   setIsSubmitting]   = useState(false);
+  const [googleLoading,  setGoogleLoading]  = useState(false);
+  const [showPassword,   setShowPassword]   = useState(false);
+  const [showConfirm,    setShowConfirm]    = useState(false);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -101,11 +125,14 @@ const RegisterPage = () => {
     if (apiError)     setApiError('');
   };
 
+  // Client-side validation - mirrors the backend express-validator rules
   const validate = () => {
     const e = {};
     if (!form.name.trim() || form.name.trim().length < 2)
       e.name = 'Name must be at least 2 characters.';
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
+    if (!form.email.trim())
+      e.email = 'Email is required.';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
       e.email = 'Enter a valid email address.';
     if (!form.password)
       e.password = 'Password is required.';
@@ -114,12 +141,12 @@ const RegisterPage = () => {
     if (form.password !== form.confirmPassword)
       e.confirmPassword = 'Passwords do not match.';
     if (form.monthlyBudget && (isNaN(Number(form.monthlyBudget)) || Number(form.monthlyBudget) < 1))
-      e.monthlyBudget = 'Budget must be a positive number.';
+      e.monthlyBudget = 'Enter a valid budget (min ₹1).';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
 
-  // ── Standard email/password registration ────────────────────────────────
+  // --- Email/password registration ------------------------------------------
   const handleSubmit = async (e) => {
     e.preventDefault();
     setApiError('');
@@ -127,50 +154,46 @@ const RegisterPage = () => {
 
     setIsSubmitting(true);
     try {
-      const { data } = await axios.post('/api/auth/register', {
-        name:          form.name.trim(),
-        email:         form.email.trim().toLowerCase(),
-        password:      form.password,
-        monthlyBudget: Number(form.monthlyBudget) || 50000,
-      });
+      const payload = {
+        name:     form.name.trim(),
+        email:    form.email.trim().toLowerCase(),
+        password: form.password,
+        ...(form.monthlyBudget ? { monthlyBudget: Number(form.monthlyBudget) } : {}),
+      };
+      const { data } = await axios.post('/api/auth/register', payload);
       if (data.success) {
-        // ✦ OTP Upgrade: Route to Verify Email page instead of Dashboard
-        toast.success(`Account created! Please check your email for the verification code. If you did not receive the email, please check your spam folder.`);
+        toast.success('Check your email for a 6-digit verification code.', 'Verify your email');
+        // Navigate to the OTP verification page with the email pre-filled
         navigate(`/verify-email?email=${encodeURIComponent(form.email.trim().toLowerCase())}`);
       }
     } catch (err) {
       setApiError(err?.response?.data?.message || 'Registration failed. Please try again.');
-    } finally {
-      setIsSubmitting(false);
-    }
+    } finally { setIsSubmitting(false); }
   };
 
-  // ── Google Sign-Up ────────────────────────────────────────────────────────
+  // --- Google Sign-In -------------------------------------------------------
+  // Google accounts are auto-verified - no OTP step needed
   const handleGoogleSuccess = async (credentialResponse) => {
     setGoogleLoading(true);
     setApiError('');
     try {
       const user = await loginWithGoogle(credentialResponse.credential);
-      toast.success(`Account created! Welcome, ${user.name.split(' ')[0]}! 🎉`);
-      // Google emails are already verified, route straight to dashboard
+      toast.success(`Welcome to TrackWise, ${user.name.split(' ')[0]}! 🎉`, 'Account created');
       navigate('/dashboard', { replace: true });
     } catch (err) {
-      setApiError(err?.response?.data?.message || err?.message || 'Google sign-up failed. Please try again.');
-    } finally {
-      setGoogleLoading(false);
-    }
+      setApiError(err?.response?.data?.message || err?.message || 'Google sign-in failed. Please try again.');
+    } finally { setGoogleLoading(false); }
   };
 
   const handleGoogleError = () => {
-    setApiError('Google sign-up was cancelled or failed. Please try again.');
+    setApiError('Google sign-in was cancelled or failed. Please try again.');
   };
 
-  const passwordsMatch = form.confirmPassword && form.password === form.confirmPassword;
-
   return (
-    <main className="relative min-h-screen bg-slate-50 dark:bg-slate-900 flex items-center justify-center px-4 py-10 transition-colors duration-300">
+    <main className="relative min-h-screen bg-slate-50 dark:bg-slate-900 flex items-center justify-center px-4 py-12 transition-colors duration-300">
       <BackgroundDecor />
 
+      {/* Theme toggle */}
       <button onClick={toggleTheme} className="absolute top-5 right-5 btn-ghost"
         aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}>
         {isDark ? <Sun size={18} className="text-amber-400" /> : <Moon size={18} className="text-slate-500" />}
@@ -179,36 +202,34 @@ const RegisterPage = () => {
       <div className="relative w-full max-w-md">
 
         {/* Brand header */}
-        <div className="text-center mb-7">
+        <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-900 dark:bg-slate-700 shadow-lg mb-4 relative">
             <Wallet size={24} className="text-emerald-400" />
             <div className="absolute inset-0 rounded-2xl ring-1 ring-inset ring-white/10" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 tracking-tight">
-            Create your account
-          </h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1.5">
-            Join TrackWise — free, forever.
-          </p>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 tracking-tight">Create your account</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1.5">Start tracking smarter with TrackWise.</p>
         </div>
 
-        <article className="card">
+        <article className="card space-y-0">
 
-          {/* ── ✦ Google Sign-Up button ───────────────────────────────────── */}
-          <div className="w-full">
+          {/* Google Sign-In - no OTP step, goes straight to dashboard */}
+          <div className="w-full mb-1">
             {googleLoading ? (
               <div className="flex items-center justify-center gap-2 w-full py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm text-slate-500 dark:text-slate-400">
                 <Loader2 size={16} className="animate-spin" />
-                Continuing with Google…
+                Signing in with Google…
               </div>
             ) : (
-              <div className="flex justify-center">
+              /* The [&>div]:w-full hack forces the Google iframe to stretch full width -
+                 the component renders an iframe internally which ignores normal CSS width */
+              <div className="flex justify-center w-full [&>div]:w-full [&_iframe]:!w-full">
                 <GoogleLogin
                   onSuccess={handleGoogleSuccess}
                   onError={handleGoogleError}
                   useOneTap={false}
                   theme={isDark ? 'filled_black' : 'outline'}
-                  shape="rectangular"
+                  shape="pill"
                   size="large"
                   text="signup_with"
                 />
@@ -218,10 +239,9 @@ const RegisterPage = () => {
 
           <OrDivider />
 
-          {/* ── Standard registration form ──────────────────────────────── */}
+          {/* Email/password form */}
           <form onSubmit={handleSubmit} noValidate className="space-y-4">
 
-            {/* API error */}
             {apiError && (
               <div className="alert-danger text-xs animate-slide-down" role="alert">
                 <AlertCircle size={15} className="flex-shrink-0" />{apiError}
@@ -232,11 +252,11 @@ const RegisterPage = () => {
             <div>
               <label htmlFor="reg-name" className="form-label">Full name</label>
               <div className="relative">
-                <User size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <User size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
                 <input id="reg-name" name="name" type="text" autoComplete="name"
-                  value={form.name} onChange={handleChange} placeholder="Arjun Sharma"
+                  value={form.name} onChange={handleChange} placeholder="Your full name"
                   className={`input-field pl-10 ${errors.name ? 'border-rose-400 focus:ring-rose-400' : ''}`}
-                  maxLength={60} aria-invalid={!!errors.name} />
+                  aria-invalid={!!errors.name} />
               </div>
               <FieldError message={errors.name} />
             </div>
@@ -245,7 +265,7 @@ const RegisterPage = () => {
             <div>
               <label htmlFor="reg-email" className="form-label">Email address</label>
               <div className="relative">
-                <Mail size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <Mail size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
                 <input id="reg-email" name="email" type="email" autoComplete="email"
                   value={form.email} onChange={handleChange} placeholder="you@example.com"
                   className={`input-field pl-10 ${errors.email ? 'border-rose-400 focus:ring-rose-400' : ''}`}
@@ -254,80 +274,83 @@ const RegisterPage = () => {
               <FieldError message={errors.email} />
             </div>
 
-            {/* Password + strength meter */}
+            {/* Password */}
             <div>
               <label htmlFor="reg-password" className="form-label">Password</label>
               <div className="relative">
-                <Lock size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                <input id="reg-password" name="password" type={showPassword ? 'text' : 'password'}
-                  autoComplete="new-password" value={form.password} onChange={handleChange}
-                  placeholder="Min. 6 characters"
+                <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
+                <input id="reg-password" name="password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={form.password} onChange={handleChange} placeholder="Min. 6 characters"
                   className={`input-field pl-10 pr-11 ${errors.password ? 'border-rose-400 focus:ring-rose-400' : ''}`}
                   aria-invalid={!!errors.password} />
                 <button type="button" onClick={() => setShowPassword(p => !p)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors p-0.5"
                   aria-label={showPassword ? 'Hide password' : 'Show password'}>
-                  {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
-              <PasswordStrength password={form.password} />
               <FieldError message={errors.password} />
+              {/* Strength meter only shows once the user starts typing */}
+              {form.password && <PasswordStrength password={form.password} />}
             </div>
 
             {/* Confirm password */}
             <div>
               <label htmlFor="reg-confirm" className="form-label">Confirm password</label>
               <div className="relative">
-                <Lock size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                <input id="reg-confirm" name="confirmPassword" type={showConfirm ? 'text' : 'password'}
-                  autoComplete="new-password" value={form.confirmPassword} onChange={handleChange}
-                  placeholder="Re-enter your password"
+                <Lock size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
+                <input id="reg-confirm" name="confirmPassword"
+                  type={showConfirm ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  value={form.confirmPassword} onChange={handleChange} placeholder="Re-enter password"
                   className={`input-field pl-10 pr-11 ${errors.confirmPassword ? 'border-rose-400 focus:ring-rose-400' : ''}`}
                   aria-invalid={!!errors.confirmPassword} />
                 <button type="button" onClick={() => setShowConfirm(p => !p)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors p-0.5"
                   aria-label={showConfirm ? 'Hide confirm password' : 'Show confirm password'}>
-                  {showConfirm ? <EyeOff size={15} /> : <Eye size={15} />}
+                  {showConfirm ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
-              {passwordsMatch && (
+              <FieldError message={errors.confirmPassword} />
+              {/* Show a checkmark once the passwords match - small UX win */}
+              {form.confirmPassword && !errors.confirmPassword && form.password === form.confirmPassword && (
                 <p className="flex items-center gap-1.5 text-xs text-emerald-500 mt-1.5 font-medium">
-                  <CheckCircle2 size={11} aria-hidden="true" />Passwords match
+                  <CheckCircle2 size={11} />Passwords match
                 </p>
               )}
-              <FieldError message={errors.confirmPassword} />
             </div>
 
-            {/* Monthly budget */}
+            {/* Monthly budget - optional, defaults to ₹50,000 on the backend */}
             <div>
               <label htmlFor="reg-budget" className="form-label">
-                Monthly budget goal
-                <span className="ml-1.5 normal-case tracking-normal font-normal text-slate-400">(optional)</span>
+                Monthly budget goal{' '}
+                <span className="normal-case font-normal text-slate-400 dark:text-slate-500 tracking-normal">(optional)</span>
               </label>
               <div className="relative">
-                <IndianRupee size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                <input id="reg-budget" name="monthlyBudget" type="number"
-                  value={form.monthlyBudget} onChange={handleChange}
-                  placeholder="50000" min="1"
+                <IndianRupee size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
+                <input id="reg-budget" name="monthlyBudget" type="number" min="1"
+                  value={form.monthlyBudget} onChange={handleChange} placeholder="e.g. 50000"
                   className={`input-field pl-10 font-numeric ${errors.monthlyBudget ? 'border-rose-400 focus:ring-rose-400' : ''}`}
                   aria-invalid={!!errors.monthlyBudget} />
               </div>
-              <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
-                Drives the budget progress bar on your dashboard. Change anytime in Settings.
-              </p>
               <FieldError message={errors.monthlyBudget} />
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
+                Defaults to ₹50,000 if left blank. Adjustable any time in Settings.
+              </p>
             </div>
 
-            <button type="submit" disabled={isSubmitting}
-              className="btn-primary w-full py-3 text-base mt-1">
+            <button type="submit" disabled={isSubmitting} className="btn-primary w-full py-3 text-base mt-2">
               {isSubmitting
                 ? <><Loader2 size={17} className="animate-spin" />Creating account…</>
-                : <>Create account<ArrowRight size={17} /></>}
+                : <>Create account<ArrowRight size={17} /></>
+              }
             </button>
           </form>
 
-          {/* Login link */}
-          <div className="relative my-5">
+          {/* Back to login */}
+          <div className="relative mt-5">
             <div className="absolute inset-0 flex items-center" aria-hidden="true">
               <div className="w-full border-t border-slate-100 dark:border-slate-700" />
             </div>
@@ -337,10 +360,14 @@ const RegisterPage = () => {
               </span>
             </div>
           </div>
-          <Link to="/login" className="btn-secondary w-full py-2.5 justify-center">
+          <Link to="/login" className="btn-secondary w-full py-2.5 justify-center mt-4">
             Sign in instead
           </Link>
         </article>
+
+        <p className="text-center text-xs text-slate-400 dark:text-slate-600 mt-6">
+          Designed and Developed by Prasanna Venkatesh
+        </p>
       </div>
     </main>
   );

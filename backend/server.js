@@ -1,11 +1,8 @@
 /**
- * server.js — Entry point for the Smart Expense Tracker API
+ * server.js - Entry point for the Smart Expense Tracker API
  *
- * Phase A additions (marked ✦):
- * - express-rate-limit on /api/auth/* (brute-force protection) ✦
- * - /api/budgets route mounted ✦
- * - node-cron recurring transaction scheduler started ✦
- * - Security headers via manual middleware ✦
+ * Sets up Express, connects to MongoDB, registers all routes,
+ * and kicks off the recurring transaction cron job.
  *
  * MERN Data Flow:
  * React (Frontend) → Axios HTTP Request
@@ -13,38 +10,42 @@
  * MongoDB Response → JSON → React setState → UI re-render
  */
 
-require('dns').setDefaultResultOrder('ipv4first'); // ✦ Fixes Render IPv6 email crash
+// Fixes an IPv6 crash on Render when SendGrid tries to resolve DNS
+require("dns").setDefaultResultOrder("ipv4first");
 
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const morgan = require("morgan");
 const dotenv = require("dotenv");
-const rateLimit = require("express-rate-limit"); // ✦ Phase A
+const rateLimit = require("express-rate-limit");
 
 dotenv.config();
 
-// ─── Route Modules ────────────────────────────────────────────────────────────
+// --- Route Modules ------------------------------------------------------------
 const authRoutes = require("./routes/auth");
 const transactionRoutes = require("./routes/transactions");
-const budgetRoutes = require("./routes/budgets"); // ✦ Phase A
-const chatRoutes = require("./routes/chat"); // ✦ Sprint 4: RAG Chatbot
+const budgetRoutes = require("./routes/budgets");
+const chatRoutes = require("./routes/chat");
 
-// ─── Recurring Job ─────────────────────────────────────────────────────────────
-const { startRecurringJob } = require("./jobs/recurringJob"); // ✦ Phase A
+// --- Recurring Cron Job -------------------------------------------------------
+const { startRecurringJob } = require("./jobs/recurringJob");
 
-// ─── Initialise App ───────────────────────────────────────────────────────────
+// --- App Setup ----------------------------------------------------------------
 const app = express();
-app.set('trust proxy', 1); // ✦ Tells rate limiter to trust Render's proxy
 
-// ─── Core Middleware ──────────────────────────────────────────────────────────
+// Needed so express-rate-limit reads the real client IP behind Render's proxy
+app.set("trust proxy", 1);
+
+// --- Core Middleware ----------------------------------------------------------
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// CORS — allow the Vite dev server to reach this API
+// Allow requests from the React frontend (Vite dev or deployed Vercel URL)
 app.use(
   cors({
-    // Updated to check both variable names so Vercel is guaranteed to connect
+    // Checking both env variable names because the name changed at some point
+    // and I want both local dev and production to work without touching this
     origin:
       process.env.CLIENT_URL ||
       process.env.CLIENT_ORIGIN ||
@@ -53,18 +54,15 @@ app.use(
   }),
 );
 
-// HTTP request logger (disabled during tests)
+// Only log HTTP requests outside of test runs
 if (process.env.NODE_ENV !== "test") {
   app.use(morgan("dev"));
 }
 
-// ─── Security Headers (✦ Phase A) ────────────────────────────────────────────
-/**
- * Basic security headers without requiring helmet.
- * In production you can replace this block with:
- * const helmet = require('helmet');
- * app.use(helmet());
- */
+// --- Security Headers ---------------------------------------------------------
+// Doing this manually instead of adding helmet as a dependency -
+// these three are the most important ones for this kind of app.
+// TODO: swap this out for helmet() before deploying to a real production environment
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -72,16 +70,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── Rate Limiting (✦ Phase A & AI Update) ────────────────────────────────────
-/**
- * authLimiter — applied to /api/auth/* only.
- *
- * Allows 15 requests per 15-minute window per IP.
- * This prevents brute-force attacks on the login and register endpoints.
- */
+// --- Rate Limiters ------------------------------------------------------------
+
+// Applied to /api/auth/* - stops brute-force attacks on login/register
+// 15 requests per 15 minutes per IP felt like a reasonable threshold
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 15, // 15 attempts per window
+  max: 15,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -89,18 +84,14 @@ const authLimiter = rateLimit({
     message:
       "Too many requests from this IP. Please wait 15 minutes and try again.",
   },
-  // Skip rate limiting in test environments
-  skip: () => process.env.NODE_ENV === "test",
+  skip: () => process.env.NODE_ENV === "test", // don't want this blocking test runs
 });
 
-/**
- * aiLimiter — applied to /api/transactions/quick-add only.
- * * Protects the Google Gemini API quota by preventing spam requests.
- * Allows 10 requests per minute per IP.
- */
+// Applied to /api/transactions/quick-add - protects the Gemini API quota
+// 10 requests per minute should be more than enough for normal usage
 const aiLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 10, // 10 AI parses per minute per IP
+  windowMs: 60 * 1000,
+  max: 10,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -109,7 +100,7 @@ const aiLimiter = rateLimit({
   },
 });
 
-// ─── Health Check ─────────────────────────────────────────────────────────────
+// --- Health Check -------------------------------------------------------------
 app.get("/api/health", (req, res) => {
   res.status(200).json({
     success: true,
@@ -119,27 +110,24 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
+// --- Routes -------------------------------------------------------------------
 
-// Auth routes — rate limited (✦)
-// /api/auth/register, /api/auth/login, /api/auth/me, /api/auth/budget, /api/auth/account
+// Auth routes with rate limiting applied
 app.use("/api/auth", authLimiter, authRoutes);
 
-// AI Quick Add route — rate limited to protect Gemini quota
+// Attach the AI limiter to the quick-add route before the main transaction router
 app.use("/api/transactions/quick-add", aiLimiter);
 
-// Transaction routes — JWT protected inside the router
-// /api/transactions (CRUD + summary + insights + export + titles + monthly)
+// All transaction routes - JWT protection is handled inside the router
 app.use("/api/transactions", transactionRoutes);
 
-// Budget routes — JWT protected inside the router (✦)
-// /api/budgets (CRUD + summary)
+// Budget routes - JWT protection is handled inside the router
 app.use("/api/budgets", budgetRoutes);
 
-// Chat routes — JWT protected inside the router (✦ Sprint 4)
+// Chatbot routes - JWT protection is handled inside the router
 app.use("/api/chat", chatRoutes);
 
-// ─── Global 404 ───────────────────────────────────────────────────────────────
+// --- 404 Handler -------------------------------------------------------------
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -147,9 +135,10 @@ app.use((req, res) => {
   });
 });
 
-// ─── Global Error Handler ─────────────────────────────────────────────────────
-// Express identifies a 4-parameter function as an error handler.
-// All controllers call next(error) to reach this centralised handler.
+// --- Global Error Handler -----------------------------------------------------
+// Express treats a 4-parameter function as an error handler.
+// Controllers call next(error) to hand off here instead of duplicating
+// error-handling logic everywhere.
 app.use((err, req, res, next) => {
   // eslint-disable-line no-unused-vars
   console.error("🔥 Unhandled Error:", err.stack || err.message);
@@ -172,7 +161,7 @@ app.use((err, req, res, next) => {
       message: "Token has expired. Please log in again.",
     });
   if (err.code === 11000) {
-    // MongoDB duplicate key error
+    // MongoDB throws this when a unique index is violated (e.g. duplicate email)
     const field = Object.keys(err.keyValue || {})[0] || "field";
     return res.status(409).json({
       success: false,
@@ -186,7 +175,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ─── Database Connection ──────────────────────────────────────────────────────
+// --- Database Connection ------------------------------------------------------
 const connectDB = async () => {
   try {
     const conn = await mongoose.connect(process.env.MONGO_URI);
@@ -197,7 +186,7 @@ const connectDB = async () => {
   }
 };
 
-// ─── Bootstrap ────────────────────────────────────────────────────────────────
+// --- Bootstrap ----------------------------------------------------------------
 const PORT = process.env.PORT || 5000;
 
 connectDB().then(() => {
@@ -205,10 +194,9 @@ connectDB().then(() => {
     console.log(`🚀  Server running on http://localhost:${PORT}`);
   });
 
-  // ✦ Phase A — Start the recurring transaction cron job AFTER DB connects.
-  // The job queries MongoDB, so it must start only when the connection is ready.
-  // It runs daily at 00:05 IST and also fires once immediately on startup
-  // to catch any transactions that were due while the server was down.
+  // Start the cron job only after the DB is ready - the job queries MongoDB,
+  // so starting it before connecting would just crash immediately.
+  // It also fires once on startup to catch anything that was due while the server was down.
   startRecurringJob();
 });
 

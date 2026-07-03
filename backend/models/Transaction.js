@@ -1,25 +1,27 @@
 /**
  * models/Transaction.js
  *
- * Mongoose Schema for the Transaction entity.
- * Extended in Phase A with:
- * - isRecurring + recurringFrequency fields (for the cron scheduler)
- * - lastGeneratedAt  (tracks when the cron last spawned a copy)
- * - getMonthlyTrend() static  (for the Reports page line/bar chart)
- * - getTitleSuggestions() static (for the search autocomplete endpoint)
- * - Updated getSummaryForUser() to support optional date range filtering
+ * Core schema for all income and expense records.
  *
- * MERN Data Flow note:
- * React's TransactionForm POSTs to /api/transactions.
- * The TransactionController creates a new Transaction document
- * linked to the authenticated user via `user_id` (populated from JWT).
- * The saved document is returned as JSON, and React updates its
- * local state — no full page reload required.
+ * Also includes recurring transaction fields so the cron job
+ * (jobs/recurringJob.js) can automatically clone transactions
+ * at the right frequency without any user intervention.
+ *
+ * Static methods on this model handle all the heavy aggregation work -
+ * summaries, category breakdowns, monthly trends, and title autocomplete -
+ * so the controllers stay thin and readable.
+ *
+ * MERN Data Flow:
+ * React's TransactionForm POSTs to /api/transactions →
+ * controller creates a Transaction document linked to the user via user_id →
+ * saved doc is returned as JSON → React updates local state → UI re-renders
  */
 
 const mongoose = require("mongoose");
 
-// ─── Allowed Enum Values ──────────────────────────────────────────────────────
+// --- Allowed Enum Values ------------------------------------------------------
+// Exporting these so the route validators can reuse them instead of
+// hardcoding the same lists in multiple places
 const TRANSACTION_TYPES = ["Income", "Expense"];
 
 const TRANSACTION_CATEGORIES = [
@@ -33,10 +35,10 @@ const TRANSACTION_CATEGORIES = [
   "Other",
 ];
 
-// Recurring frequency options — used in the cron job and the frontend dropdown
+// Used both in the schema enum and in the cron job logic
 const RECURRING_FREQUENCIES = ["Daily", "Weekly", "Monthly"];
 
-// ─── Schema Definition ────────────────────────────────────────────────────────
+// --- Schema -------------------------------------------------------------------
 const TransactionSchema = new mongoose.Schema(
   {
     title: {
@@ -76,7 +78,7 @@ const TransactionSchema = new mongoose.Schema(
       default: Date.now,
     },
 
-    // Foreign key — links every transaction to exactly one User
+    // Every transaction belongs to exactly one user
     user_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -84,7 +86,6 @@ const TransactionSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Optional note/description for the transaction
     notes: {
       type: String,
       trim: true,
@@ -92,17 +93,14 @@ const TransactionSchema = new mongoose.Schema(
       default: "",
     },
 
-    // ── Recurring Transaction Fields (Phase A) ────────────────────────────────
-    /**
-     * isRecurring — When true, the node-cron scheduler (jobs/recurringJob.js)
-     * will automatically clone this transaction at the specified frequency.
-     * The original "template" transaction is never deleted by the scheduler —
-     * only new copies are generated from it.
-     */
+    // -- Recurring Transaction Fields ------------------------------------------
+    // When isRecurring is true, the cron job will clone this transaction
+    // at the given frequency. The original document acts as a template -
+    // the cron job never deletes or modifies it, only creates new copies from it.
     isRecurring: {
       type: Boolean,
       default: false,
-      index: true, // Indexed so the cron job can quickly find all recurring docs
+      index: true, // indexed so the cron job can find all recurring docs quickly
     },
 
     recurringFrequency: {
@@ -112,24 +110,20 @@ const TransactionSchema = new mongoose.Schema(
         message: `Frequency must be one of: ${RECURRING_FREQUENCIES.join(", ")}.`,
       },
       default: null,
-      // Only meaningful when isRecurring is true — validated at controller level
+      // Only meaningful when isRecurring is true - the controller validates this pairing
     },
 
-    /**
-     * lastGeneratedAt — Timestamp of the last time the cron job fired a copy
-     * of this recurring transaction. Used to prevent duplicate generation
-     * within the same cycle (e.g., if the server restarts mid-day).
-     */
+    // Tracks the last time the cron job generated a copy from this template.
+    // Used to make sure we don't accidentally generate duplicates if the
+    // server restarts mid-cycle.
     lastGeneratedAt: {
       type: Date,
       default: null,
     },
 
-    /**
-     * isGeneratedCopy — True on transactions auto-created by the cron scheduler.
-     * Lets the UI optionally badge them as "Auto" and prevents them from being
-     * treated as new recurring templates themselves.
-     */
+    // Flags transactions that were auto-created by the cron job.
+    // Lets the UI optionally show an "Auto" badge and prevents these copies
+    // from being treated as new recurring templates themselves.
     isGeneratedCopy: {
       type: Boolean,
       default: false,
@@ -140,15 +134,17 @@ const TransactionSchema = new mongoose.Schema(
   },
 );
 
-// ─── Compound Indexes ──────────────────────────────────────────────────────────
-// Primary query: user's transactions sorted newest first
+// --- Indexes ------------------------------------------------------------------
+// Main dashboard query - user's transactions sorted newest first
 TransactionSchema.index({ user_id: 1, date: -1 });
-// Cron job query: find recurring transactions that need processing
+// Cron job query - find recurring transactions that are due
 TransactionSchema.index({ isRecurring: 1, lastGeneratedAt: 1 });
-// Reports query: user + date range aggregations
+// Reports/summary queries - filtering by user + date range + type
 TransactionSchema.index({ user_id: 1, date: 1, type: 1 });
 
-// ─── Virtual: formattedAmount ─────────────────────────────────────────────────
+// --- Virtual: formattedAmount -------------------------------------------------
+// Handy for debugging - not really used by the frontend since it formats
+// amounts itself, but useful when logging transaction objects
 TransactionSchema.virtual("formattedAmount").get(function () {
   return `₹${this.amount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`;
 });
@@ -156,15 +152,15 @@ TransactionSchema.virtual("formattedAmount").get(function () {
 TransactionSchema.set("toJSON", { virtuals: true });
 TransactionSchema.set("toObject", { virtuals: true });
 
-// ─── Static: getSummaryForUser ────────────────────────────────────────────────
+// --- Static: getSummaryForUser ------------------------------------------------
 /**
- * Aggregates total Income and Expense for a user.
- * Now supports optional `from` / `to` date range filtering for the Reports page.
+ * Returns total income, total expenses, balance, and transaction count
+ * for a given user. Supports optional date range filtering for the Reports page.
  *
  * @param {ObjectId} userId
- * @param {Object}  [options]
- * @param {Date}    [options.from]  — Start of date range (inclusive)
- * @param {Date}    [options.to]    — End of date range (inclusive)
+ * @param {Object}   [options]
+ * @param {Date}     [options.from]  Start of date range (inclusive)
+ * @param {Date}     [options.to]    End of date range (inclusive)
  */
 TransactionSchema.statics.getSummaryForUser = async function (
   userId,
@@ -172,7 +168,7 @@ TransactionSchema.statics.getSummaryForUser = async function (
 ) {
   const matchStage = { user_id: new mongoose.Types.ObjectId(userId) };
 
-  // Apply optional date range
+  // Only add date filters if they were actually passed in
   if (options.from || options.to) {
     matchStage.date = {};
     if (options.from) matchStage.date.$gte = new Date(options.from);
@@ -181,39 +177,36 @@ TransactionSchema.statics.getSummaryForUser = async function (
 
   const result = await this.aggregate([
     { $match: matchStage },
-    { 
-      $group: { 
-        _id: "$type", 
-        total: { $sum: "$amount" }, 
-        // FIX: Tell MongoDB to also count the number of documents
-        count: { $sum: 1 } 
-      } 
+    {
+      $group: {
+        _id: "$type",
+        total: { $sum: "$amount" },
+        count: { $sum: 1 }, // counting here so we don't need a separate query for totals
+      },
     },
   ]);
 
-  // FIX: Initialize totalTransactions
   const summary = { totalIncome: 0, totalExpense: 0, totalTransactions: 0 };
-  
+
   result.forEach((item) => {
     if (item._id === "Income") summary.totalIncome = item.total;
     if (item._id === "Expense") summary.totalExpense = item.total;
-    
-    // Add the grouped counts together
     summary.totalTransactions += item.count;
   });
-  
+
   summary.balance = summary.totalIncome - summary.totalExpense;
   return summary;
 };
 
-// ─── Static: getCategoryBreakdownForUser ──────────────────────────────────────
+// --- Static: getCategoryBreakdownForUser --------------------------------------
 /**
- * Expense amounts grouped by category — supports date range filtering.
+ * Returns expense totals grouped by category, sorted highest to lowest.
+ * Used by the insights/pie chart endpoint.
  *
  * @param {ObjectId} userId
- * @param {Object}  [options]
- * @param {Date}    [options.from]
- * @param {Date}    [options.to]
+ * @param {Object}   [options]
+ * @param {Date}     [options.from]
+ * @param {Date}     [options.to]
  */
 TransactionSchema.statics.getCategoryBreakdownForUser = async function (
   userId,
@@ -223,6 +216,7 @@ TransactionSchema.statics.getCategoryBreakdownForUser = async function (
     user_id: new mongoose.Types.ObjectId(userId),
     type: "Expense",
   };
+
   if (options.from || options.to) {
     matchStage.date = {};
     if (options.from) matchStage.date.$gte = new Date(options.from);
@@ -237,23 +231,24 @@ TransactionSchema.statics.getCategoryBreakdownForUser = async function (
   ]);
 };
 
-// ─── Static: getMonthlyTrend ──────────────────────────────────────────────────
+// --- Static: getMonthlyTrend --------------------------------------------------
 /**
- * Aggregates Income and Expense totals grouped by calendar month for the
- * Reports page's Line chart and Bar chart.
+ * Returns income and expense totals grouped by month for the last N months.
+ * Sorted oldest → newest so the chart renders left to right chronologically.
  *
- * Returns the last N months (default 6) sorted oldest-first so charts
- * render left→right chronologically.
+ * The two-stage grouping is needed because MongoDB can't pivot Income/Expense
+ * into separate columns in a single $group - we group by type first,
+ * then re-group by month to combine them.
  *
  * @param {ObjectId} userId
- * @param {number}  [months=6] — How many past months to include
- * @returns {Promise<Array<{ month: string, income: number, expense: number }>>}
+ * @param {number}   [months=6]  How many past months to include
+ * @returns {Promise<Array<{ month: string, income: number, expense: number, savings: number }>>}
  */
 TransactionSchema.statics.getMonthlyTrend = async function (
   userId,
   months = 6,
 ) {
-  // Calculate the start date (beginning of N months ago)
+  // Start from the beginning of the earliest month we want to include
   const startDate = new Date();
   startDate.setMonth(startDate.getMonth() - (months - 1));
   startDate.setDate(1);
@@ -267,7 +262,7 @@ TransactionSchema.statics.getMonthlyTrend = async function (
       },
     },
     {
-      // Group by year + month + transaction type
+      // First group: year + month + type  →  gives us one row per type per month
       $group: {
         _id: {
           year: { $year: "$date" },
@@ -278,7 +273,7 @@ TransactionSchema.statics.getMonthlyTrend = async function (
       },
     },
     {
-      // Re-group to combine Income and Expense into one document per month
+      // Second group: year + month  →  collapses Income and Expense into one row per month
       $group: {
         _id: { year: "$_id.year", month: "$_id.month" },
         income: {
@@ -292,11 +287,22 @@ TransactionSchema.statics.getMonthlyTrend = async function (
     { $sort: { "_id.year": 1, "_id.month": 1 } },
   ]);
 
-  // Format the month label for the chart axis (e.g., "Jan 2025")
+  // Format the month label for the chart axis (e.g. "Jan 2025")
   const monthNames = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", 
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
   ];
+
   return result.map((r) => ({
     month: `${monthNames[r._id.month - 1]} ${r._id.year}`,
     income: r.income,
@@ -305,14 +311,15 @@ TransactionSchema.statics.getMonthlyTrend = async function (
   }));
 };
 
-// ─── Static: getTitleSuggestions ──────────────────────────────────────────────
+// --- Static: getTitleSuggestions ----------------------------------------------
 /**
- * Returns distinct transaction titles that match a search query string.
- * Used by the autocomplete endpoint: GET /api/transactions/titles?q=
+ * Returns distinct transaction titles that partially match a search string.
+ * Sorted by how often the user has used that title, then by most recent.
+ * Used by the autocomplete input on the transaction form.
  *
  * @param {ObjectId} userId
- * @param {string}   query  — Partial title string to match
- * @param {number}   [limit=8] — Max suggestions to return
+ * @param {string}   query    Partial title to search for
+ * @param {number}   [limit=8]
  * @returns {Promise<string[]>}
  */
 TransactionSchema.statics.getTitleSuggestions = async function (
@@ -322,22 +329,24 @@ TransactionSchema.statics.getTitleSuggestions = async function (
 ) {
   if (!query || query.trim().length < 1) return [];
 
+  // console.log("getTitleSuggestions query:", query); // left from debugging autocomplete lag
+
   const results = await this.aggregate([
     {
       $match: {
         user_id: new mongoose.Types.ObjectId(userId),
-        title: { $regex: query.trim(), $options: "i" },
+        title: { $regex: query.trim(), $options: "i" }, // case-insensitive partial match
       },
     },
-    // Get distinct titles (group + pick most recent occurrence for ranking)
     {
+      // Group by title to get distinct values and track usage frequency
       $group: {
         _id: "$title",
         lastUsed: { $max: "$date" },
         count: { $sum: 1 },
       },
     },
-    // Sort by most frequently used, then most recently used
+    // Show the most frequently used titles first, break ties by most recent
     { $sort: { count: -1, lastUsed: -1 } },
     { $limit: limit },
     { $project: { _id: 0, title: "$_id", count: 1 } },
@@ -346,7 +355,7 @@ TransactionSchema.statics.getTitleSuggestions = async function (
   return results.map((r) => r.title);
 };
 
-// ─── Export ───────────────────────────────────────────────────────────────────
+// --- Export -------------------------------------------------------------------
 const Transaction = mongoose.model("Transaction", TransactionSchema);
 
 module.exports = Transaction;

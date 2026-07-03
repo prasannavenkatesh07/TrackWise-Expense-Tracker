@@ -1,25 +1,21 @@
 /**
- * components/TransactionTable.jsx  (Phase D — fully upgraded)
+ * components/TransactionTable.jsx
  *
- * Phase D additions over the original:
- * ✦ Edit Transaction modal (Pencil icon → pre-filled form → PUT /api/transactions/:id)
- * ✦ Delete Confirm modal   (replaces window.confirm — toast-style inline dialog)
- * ✦ Search Autocomplete    (GET /api/transactions/titles?q= → typeahead dropdown)
- * ✦ Date range filter props (from / to) passed in from HistoryPage
- * ✦ isRecurring / isGeneratedCopy badges on rows
- * ✦ Custom Dropdowns       (replaces native browser <select> tags)
+ * Paginated, filterable transaction list with inline edit and delete.
+ *
+ * Features:
+ *   - Search with title autocomplete (GET /api/transactions/titles?q=)
+ *   - Type and category filter dropdowns
+ *   - Recurring/Auto-generated badges on rows
+ *   - Edit modal (pre-fills form → PUT /api/transactions/:id)
+ *   - Delete confirmation modal (no window.confirm - uses a proper portal dialog)
+ *   - CSV export (GET /api/transactions/export → blob download)
+ *   - Custom dropdown components replacing native <select> tags for consistent theming
  *
  * Props:
- * refreshTrigger {number} — increment from parent to force re-fetch
- * from           {string} — YYYY-MM-DD date range start (optional)
- * to             {string} — YYYY-MM-DD date range end   (optional)
- *
- * MERN Data Flow:
- * GET /api/transactions?page&limit&type&category&search&from&to
- * PUT /api/transactions/:id  → editTransaction controller → findOneAndUpdate
- * DELETE /api/transactions/:id
- * GET /api/transactions/titles?q= → getTitleSuggestions aggregation
- * GET /api/transactions/export    → CSV blob download
+ *   refreshTrigger {number} - parent increments this to force a re-fetch (e.g. after adding a transaction)
+ *   from           {string} - YYYY-MM-DD date range start (optional, passed from HistoryPage)
+ *   to             {string} - YYYY-MM-DD date range end   (optional)
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -33,32 +29,31 @@ import {
 } from 'lucide-react';
 import { useToast } from '../context/ToastContext';
 
-// ── Constants ──────────────────────────────────────────────────────────────────
+// --- Constants ----------------------------------------------------------------
 const CATEGORIES = [
-  'Housing','Food & Groceries','Transport','Utilities',
-  'Entertainment','Healthcare','Salary','Other',
+  'Housing', 'Food & Groceries', 'Transport', 'Utilities',
+  'Entertainment', 'Healthcare', 'Salary', 'Other',
 ];
 const PAGE_LIMIT = 10;
 
-// ── Custom Select Component ────────────────────────────────────────────────────
-// Replaces the ugly native browser <select> with a sleek, theme-aware dropdown
+// --- Custom Select ------------------------------------------------------------
+// Same reason as in TransactionForm - native <select> can't be styled to match
+// the design system across browsers, so using a custom dropdown instead
 const CustomSelect = ({ value, onChange, options, placeholder, disabled, error, icon: Icon, className = '' }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef(null);
 
-  // Close dropdown if clicked outside
   useEffect(() => {
     const handleClickOutside = (event) => {
-      if (containerRef.current && !containerRef.current.contains(event.target)) {
+      if (containerRef.current && !containerRef.current.contains(event.target))
         setIsOpen(false);
-      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   const selectedOption = options.find(o => o.value === value);
-  const displayText = selectedOption ? selectedOption.label : placeholder;
+  const displayText    = selectedOption ? selectedOption.label : placeholder;
 
   return (
     <div className={`relative ${className}`} ref={containerRef}>
@@ -66,19 +61,17 @@ const CustomSelect = ({ value, onChange, options, placeholder, disabled, error, 
         type="button"
         disabled={disabled}
         onClick={() => setIsOpen(!isOpen)}
-        // ✦ FIX: Removed hardcoded background classes so it inherits .input-field styling properly
+        // Removed hardcoded background so it inherits .input-field dark mode styles
         className={`w-full flex items-center justify-between input-field text-left ${
-          error ? 'border-rose-400 focus:ring-rose-400' : ''
-        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${Icon ? 'pl-9' : ''}`}
+          error    ? 'border-rose-400 focus:ring-rose-400'   : ''
+        } ${disabled ? 'opacity-50 cursor-not-allowed'       : ''
+        } ${Icon    ? 'pl-9'                                  : ''}`}
       >
         {Icon && <Icon size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />}
         <span className={`block truncate ${value !== undefined && value !== '' ? 'text-slate-800 dark:text-slate-200' : 'text-slate-500 dark:text-slate-400'}`}>
           {displayText}
         </span>
-        <ChevronDown
-          size={16}
-          className={`text-slate-400 transition-transform duration-200 flex-shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''}`}
-        />
+        <ChevronDown size={16} className={`text-slate-400 transition-transform duration-200 flex-shrink-0 ml-2 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {isOpen && !disabled && (
@@ -90,10 +83,7 @@ const CustomSelect = ({ value, onChange, options, placeholder, disabled, error, 
               <button
                 key={opt.value}
                 type="button"
-                onClick={() => {
-                  onChange(opt.value);
-                  setIsOpen(false);
-                }}
+                onClick={() => { onChange(opt.value); setIsOpen(false); }}
                 className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between whitespace-nowrap ${
                   value === opt.value
                     ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold'
@@ -111,16 +101,19 @@ const CustomSelect = ({ value, onChange, options, placeholder, disabled, error, 
   );
 };
 
-// ── Skeleton Row ───────────────────────────────────────────────────────────────
+// --- Skeleton row -------------------------------------------------------------
+// Shown while transactions are loading - widths approximate real cell content
 const SkeletonRow = () => (
-  <tr>{[100,160,110,80,90,70,50].map((w,i) => (
-    <td key={i} className="px-4 py-3">
-      <div className="skeleton h-4 rounded" style={{ width: w }} />
-    </td>
-  ))}</tr>
+  <tr>
+    {[100,160,110,80,90,70,50].map((w, i) => (
+      <td key={i} className="px-4 py-3">
+        <div className="skeleton h-4 rounded" style={{ width: w }} />
+      </td>
+    ))}
+  </tr>
 );
 
-// ── Empty State ────────────────────────────────────────────────────────────────
+// --- Empty state --------------------------------------------------------------
 const EmptyState = ({ hasFilters, onClear }) => (
   <tr><td colSpan={7} className="px-4 py-16 text-center">
     <div className="flex flex-col items-center gap-3">
@@ -144,14 +137,13 @@ const EmptyState = ({ hasFilters, onClear }) => (
   </td></tr>
 );
 
-// ── Type Badge ─────────────────────────────────────────────────────────────────
+// --- Type badge ---------------------------------------------------------------
 const TypeBadge = ({ type }) => type === 'Income'
   ? <span className="badge-income"><TrendingUp size={11} />Income</span>
   : <span className="badge-expense"><TrendingDown size={11} />Expense</span>;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ✦ Phase D: Delete Confirm Modal
-// ─────────────────────────────────────────────────────────────────────────────
+// --- Delete confirmation modal ------------------------------------------------
+// Using a proper dialog instead of window.confirm - looks nicer and matches the design
 const DeleteConfirmModal = ({ title, onConfirm, onCancel }) =>
   createPortal(
     <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4"
@@ -185,9 +177,9 @@ const DeleteConfirmModal = ({ title, onConfirm, onCancel }) =>
     document.body
   );
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ✦ Phase D: Edit Transaction Modal
-// ─────────────────────────────────────────────────────────────────────────────
+// --- Edit transaction modal ---------------------------------------------------
+// Pre-fills all fields from the selected transaction row.
+// Only sends changed fields to the backend via PUT - the schema handles partial updates.
 const EditModal = ({ tx, onSave, onClose }) => {
   const { toast } = useToast();
   const [form, setForm] = useState({
@@ -203,9 +195,9 @@ const EditModal = ({ tx, onSave, onClose }) => {
 
   const validate = () => {
     const e = {};
-    if (!form.title.trim() || form.title.trim().length < 2) e.title = 'Title must be at least 2 characters.';
+    if (!form.title.trim() || form.title.trim().length < 2) e.title  = 'Title must be at least 2 characters.';
     if (!form.amount || isNaN(Number(form.amount)) || Number(form.amount) < 1) e.amount = 'Amount must be at least ₹1.';
-    if (!form.date) e.date = 'Date is required.';
+    if (!form.date)  e.date   = 'Date is required.';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -231,10 +223,12 @@ const EditModal = ({ tx, onSave, onClose }) => {
     } finally { setSaving(false); }
   };
 
+  // Small helper to avoid repeating the same input boilerplate four times
   const field = (id, label, type, name, opts = {}) => (
     <div>
       <label htmlFor={id} className="form-label">{label}</label>
-      <input id={id} type={type} name={name} value={form[name]}
+      <input
+        id={id} type={type} name={name} value={form[name]}
         onChange={e => { setForm(p => ({ ...p, [name]: e.target.value })); setErrors(er => ({ ...er, [name]: '' })); }}
         className={`input-field ${opts.mono ? 'font-numeric' : ''} ${errors[name] ? 'border-rose-400 focus:ring-rose-400' : ''}`}
         {...opts}
@@ -250,7 +244,6 @@ const EditModal = ({ tx, onSave, onClose }) => {
            onClick={onClose} aria-hidden="true" />
       <div className="relative w-full max-w-lg bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 animate-slide-down">
 
-        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-700">
           <div className="flex items-center gap-2">
             <Edit3 size={16} className="text-emerald-500" aria-hidden="true" />
@@ -261,7 +254,6 @@ const EditModal = ({ tx, onSave, onClose }) => {
           </button>
         </div>
 
-        {/* Body */}
         <div className="px-6 py-5 space-y-4">
           {/* Type toggle */}
           <div>
@@ -272,11 +264,9 @@ const EditModal = ({ tx, onSave, onClose }) => {
                   onClick={() => setForm(p => ({ ...p, type: t }))}
                   className={[
                     'flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold border transition-all duration-200 focus:outline-none focus:ring-2',
-                    form.type === t && t === 'Income'
-                      ? 'bg-emerald-500 border-emerald-500 text-white focus:ring-emerald-400'
-                      : form.type === t
-                      ? 'bg-rose-500 border-rose-500 text-white focus:ring-rose-400'
-                      : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 focus:ring-slate-400',
+                    form.type === t && t === 'Income'  ? 'bg-emerald-500 border-emerald-500 text-white focus:ring-emerald-400'
+                    : form.type === t                   ? 'bg-rose-500 border-rose-500 text-white focus:ring-rose-400'
+                    :                                    'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500 focus:ring-slate-400',
                   ].join(' ')}
                   aria-pressed={form.type === t}
                 >
@@ -286,7 +276,7 @@ const EditModal = ({ tx, onSave, onClose }) => {
             </div>
           </div>
 
-          {field('em-title',  'Title',   'text',   'title',  { placeholder: 'Transaction title' })}
+          {field('em-title',  'Title',      'text',   'title',  { placeholder: 'Transaction title' })}
           {field('em-amount', 'Amount (₹)', 'number', 'amount', { mono: true, min: 1, placeholder: '0.00' })}
 
           <div className="grid grid-cols-2 gap-3 relative z-20">
@@ -301,25 +291,30 @@ const EditModal = ({ tx, onSave, onClose }) => {
             </div>
             <div>
               <label htmlFor="em-date" className="form-label">Date</label>
-              <input id="em-date" type="date" value={form.date}
+              <input
+                id="em-date" type="date" value={form.date}
                 onChange={e => { setForm(p => ({ ...p, date: e.target.value })); setErrors(er => ({ ...er, date: '' })); }}
                 max={new Date().toISOString().split('T')[0]}
-                className={`input-field ${errors.date ? 'border-rose-400' : ''}`} />
+                className={`input-field ${errors.date ? 'border-rose-400' : ''}`}
+              />
               {errors.date && <p className="text-xs text-rose-500 mt-1 font-medium" role="alert">{errors.date}</p>}
             </div>
           </div>
 
           <div>
-            <label htmlFor="em-notes" className="form-label">Notes <span className="normal-case font-normal text-slate-400">(optional)</span></label>
-            <textarea id="em-notes" value={form.notes} rows={2} maxLength={250}
+            <label htmlFor="em-notes" className="form-label">
+              Notes <span className="normal-case font-normal text-slate-400">(optional)</span>
+            </label>
+            <textarea
+              id="em-notes" value={form.notes} rows={2} maxLength={250}
               onChange={e => setForm(p => ({ ...p, notes: e.target.value }))}
-              className="input-field resize-none" placeholder="Any extra details…" />
+              className="input-field resize-none" placeholder="Any extra details…"
+            />
           </div>
         </div>
 
-        {/* Footer */}
         <div className="flex gap-3 px-6 py-4 border-t border-slate-100 dark:border-slate-700">
-          <button onClick={onClose} className="btn-secondary flex-1 py-2.5">Cancel</button>
+          <button onClick={onClose}    className="btn-secondary flex-1 py-2.5">Cancel</button>
           <button onClick={handleSave} disabled={saving} className="btn-primary flex-1 py-2.5">
             {saving ? <><Loader2 size={14} className="animate-spin"/>Saving…</> : <><Check size={14}/>Save changes</>}
           </button>
@@ -330,10 +325,11 @@ const EditModal = ({ tx, onSave, onClose }) => {
   );
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ✦ Phase D: Autocomplete Dropdown
-// ─────────────────────────────────────────────────────────────────────────────
-const AutocompleteDropdown = ({ suggestions, onSelect, inputRef }) => {
+// --- Autocomplete dropdown ----------------------------------------------------
+// Shows title suggestions below the search input while the user types.
+// Uses onMouseDown instead of onClick so it fires before the input's onBlur
+// (which would hide the dropdown before the click registers).
+const AutocompleteDropdown = ({ suggestions, onSelect }) => {
   if (!suggestions.length) return null;
   return (
     <ul
@@ -357,38 +353,38 @@ const AutocompleteDropdown = ({ suggestions, onSelect, inputRef }) => {
   );
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Main TransactionTable Component
-// ─────────────────────────────────────────────────────────────────────────────
+// --- Main TransactionTable component -----------------------------------------
 const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
   const { toast } = useToast();
 
-  // ── Data state ────────────────────────────────────────────────────────────
+  // Data
   const [transactions, setTransactions] = useState([]);
   const [totalCount,   setTotalCount]   = useState(0);
   const [totalPages,   setTotalPages]   = useState(1);
   const [isLoading,    setIsLoading]    = useState(true);
 
-  // ── Filter / pagination ───────────────────────────────────────────────────
+  // Filters + pagination
   const [searchInput,     setSearchInput]     = useState('');
   const [search,          setSearch]          = useState('');
   const [typeFilter,      setTypeFilter]      = useState('');
   const [categoryFilter,  setCategoryFilter]  = useState('');
   const [page,            setPage]            = useState(1);
 
-  // ── Modal / action state ──────────────────────────────────────────────────
-  const [editTarget,      setEditTarget]      = useState(null);
-  const [confirmDelete,   setConfirmDelete]   = useState(null);
-  const [deletingId,      setDeletingId]      = useState(null);
-  const [isExporting,     setIsExporting]     = useState(false);
+  // Modal + action state
+  const [editTarget,    setEditTarget]    = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deletingId,    setDeletingId]    = useState(null);
+  const [isExporting,   setIsExporting]   = useState(false);
 
-  // ── Autocomplete state ─────────────────────────────────────────────────────
+  // Autocomplete
   const [suggestions,     setSuggestions]     = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const suggestTimer      = useRef(null);
-  const searchInputRef    = useRef(null);
+  const suggestTimer   = useRef(null);
+  const searchInputRef = useRef(null);
 
-  // ── Debounce search → API + autocomplete ──────────────────────────────────
+  // -- Debounced search + autocomplete ----------------------------------------
+  // Two separate timers: one for the actual search (400ms) and one for
+  // autocomplete suggestions (300ms) - suggestions should feel snappier
   const debounceTimer = useRef(null);
   const handleSearchInput = (val) => {
     setSearchInput(val);
@@ -405,7 +401,7 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
         try {
           const { data } = await axios.get(`/api/transactions/titles?q=${encodeURIComponent(val.trim())}`);
           if (data.success) { setSuggestions(data.data); setShowSuggestions(true); }
-        } catch { /* silently ignore autocomplete errors */ }
+        } catch { /* autocomplete errors shouldn't show an error state - just silently fail */ }
       }, 300);
     } else {
       setSuggestions([]);
@@ -421,18 +417,18 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
     setShowSuggestions(false);
   };
 
-  // ── Fetch transactions ────────────────────────────────────────────────────
+  // -- Fetch transactions ------------------------------------------------------
   const fetchTransactions = useCallback(async () => {
     setIsLoading(true);
     try {
       const params = new URLSearchParams({
         page,
         limit: PAGE_LIMIT,
-        ...(search        && { search }),
-        ...(typeFilter    && { type: typeFilter }),
+        ...(search         && { search }),
+        ...(typeFilter     && { type: typeFilter }),
         ...(categoryFilter && { category: categoryFilter }),
-        ...(from          && { from }),
-        ...(to            && { to }),
+        ...(from           && { from }),
+        ...(to             && { to }),
       });
 
       const { data } = await axios.get(`/api/transactions?${params.toString()}`);
@@ -450,9 +446,11 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
 
   useEffect(() => { fetchTransactions(); }, [fetchTransactions]);
 
+  // Reset to page 1 when filters change - otherwise the user could be on page 5
+  // of a filtered set that only has 1 page
   useEffect(() => { setPage(1); }, [typeFilter, categoryFilter, from, to]);
 
-  // ── Delete flow ───────────────────────────────────────────────────────────
+  // -- Delete flow ------------------------------------------------------------
   const requestDelete = (tx) => setConfirmDelete({ _id: tx._id, title: tx.title });
 
   const confirmDeleteAction = async () => {
@@ -462,6 +460,7 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
     try {
       const { data } = await axios.delete(`/api/transactions/${confirmDelete._id}`);
       if (data.success) {
+        // Remove from local state immediately instead of re-fetching the whole page
         setTransactions(prev => prev.filter(t => t._id !== confirmDelete._id));
         setTotalCount(prev => prev - 1);
         toast.success('Transaction deleted.', 'Deleted');
@@ -471,13 +470,17 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
     } finally { setDeletingId(null); }
   };
 
-  // ── Edit save — optimistic row update ─────────────────────────────────────
+  // -- Edit save --------------------------------------------------------------
+  // Optimistic row update - replace the old object in local state immediately
+  // so the table updates without a round trip
   const handleEditSave = (updatedTx) => {
     setTransactions(prev => prev.map(t => t._id === updatedTx._id ? updatedTx : t));
     setEditTarget(null);
   };
 
-  // ── CSV Export ────────────────────────────────────────────────────────────
+  // -- CSV Export -------------------------------------------------------------
+  // Fetches the CSV as a blob, creates a temporary object URL, clicks it
+  // programmatically, then revokes the URL to free memory
   const handleCSVExport = async () => {
     setIsExporting(true);
     try {
@@ -496,7 +499,6 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
     } finally { setIsExporting(false); }
   };
 
-  // ── Clear filters ─────────────────────────────────────────────────────────
   const clearFilters = () => {
     setSearchInput(''); setSearch('');
     setTypeFilter(''); setCategoryFilter('');
@@ -512,10 +514,8 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
   return (
     <section aria-label="Transaction history">
 
-      {/* ── Modals ─────────────────────────────────────────────────────── */}
-      {editTarget && (
-        <EditModal tx={editTarget} onSave={handleEditSave} onClose={() => setEditTarget(null)} />
-      )}
+      {/* Modals - rendered via createPortal in their own components above */}
+      {editTarget    && <EditModal tx={editTarget} onSave={handleEditSave} onClose={() => setEditTarget(null)} />}
       {confirmDelete && (
         <DeleteConfirmModal
           title={confirmDelete.title}
@@ -524,10 +524,10 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
         />
       )}
 
-      {/* ── Controls Row ────────────────────────────────────────────────── */}
+      {/* -- Controls row ---------------------------------------------------- */}
       <div className="flex flex-col lg:flex-row items-stretch lg:items-center gap-3 mb-5">
 
-        {/* ✦ Phase D — Search with autocomplete */}
+        {/* Search input with autocomplete */}
         <div className="relative flex-1 min-w-[200px] z-20">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" aria-hidden="true" />
           <input
@@ -543,58 +543,50 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
             aria-autocomplete="list"
             aria-expanded={showSuggestions}
           />
-          {/* Autocomplete dropdown */}
           {showSuggestions && (
             <AutocompleteDropdown
               suggestions={suggestions}
               onSelect={handleSuggestionSelect}
-              inputRef={searchInputRef}
             />
           )}
         </div>
 
-        {/* ── Filters & Actions Group ── */}
+        {/* Filter dropdowns + action buttons */}
         <div className="flex flex-wrap items-center gap-3 flex-shrink-0 relative z-10">
-          
-          {/* ✦ Replace native type <select> with CustomSelect */}
           <CustomSelect
             value={typeFilter}
             onChange={val => setTypeFilter(val)}
             options={[
-              { label: 'All Types', value: '' },
-              { label: 'Income', value: 'Income' },
-              { label: 'Expense', value: 'Expense' }
+              { label: 'All Types',  value: '' },
+              { label: 'Income',     value: 'Income' },
+              { label: 'Expense',    value: 'Expense' },
             ]}
             placeholder="All Types"
             icon={Filter}
             className="flex-1 sm:flex-initial w-full sm:w-36"
           />
-
-          {/* ✦ Replace native category <select> with CustomSelect */}
           <CustomSelect
             value={categoryFilter}
             onChange={val => setCategoryFilter(val)}
             options={[
               { label: 'All Categories', value: '' },
-              ...CATEGORIES.map(c => ({ label: c, value: c }))
+              ...CATEGORIES.map(c => ({ label: c, value: c })),
             ]}
             placeholder="All Categories"
             className="flex-1 sm:flex-initial w-full sm:w-48"
           />
 
-          {/* Clear */}
+          {/* Clear filters - only shown when at least one filter is active */}
           {hasFilters && (
             <button onClick={clearFilters} className="btn-ghost p-2 flex-shrink-0" title="Clear all filters" aria-label="Clear filters">
               <X size={15} />
             </button>
           )}
 
-          {/* Refresh */}
           <button onClick={fetchTransactions} disabled={isLoading} className="btn-ghost p-2 flex-shrink-0" aria-label="Refresh list">
             <RefreshCw size={15} className={isLoading ? 'animate-spin text-emerald-500' : 'text-slate-400'} />
           </button>
 
-          {/* CSV Export */}
           <button onClick={handleCSVExport} disabled={isExporting} className="btn-secondary whitespace-nowrap flex-shrink-0" aria-label="Download transactions as CSV">
             {isExporting ? <Loader2 size={14} className="animate-spin"/> : <Download size={14}/>}
             {isExporting ? 'Exporting…' : 'Download CSV'}
@@ -608,13 +600,13 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
           Showing{' '}
           <span className="text-slate-700 dark:text-slate-300 font-semibold">
             {(page - 1) * PAGE_LIMIT + 1}–{Math.min(page * PAGE_LIMIT, totalCount)}
-          </span>{' '}
-          of <span className="text-slate-700 dark:text-slate-300 font-semibold">{totalCount}</span> transactions
+          </span>
+          {' '}of <span className="text-slate-700 dark:text-slate-300 font-semibold">{totalCount}</span> transactions
           {hasFilters && <span className="text-emerald-500 dark:text-emerald-400"> (filtered)</span>}
         </p>
       )}
 
-      {/* ── Table ────────────────────────────────────────────────────── */}
+      {/* -- Table ----------------------------------------------------------- */}
       <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
         <table className="w-full text-sm" role="table" aria-label="Transactions list">
           <thead>
@@ -629,29 +621,28 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
           </thead>
 
           <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50 bg-white dark:bg-slate-800/30">
-            {isLoading && Array.from({length:6}).map((_,i) => <SkeletonRow key={i}/>)}
-            {!isLoading && transactions.length === 0 && <EmptyState hasFilters={hasFilters} onClear={clearFilters}/>}
+            {isLoading && Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} />)}
+            {!isLoading && transactions.length === 0 && <EmptyState hasFilters={hasFilters} onClear={clearFilters} />}
 
             {!isLoading && transactions.map(tx => (
               <tr key={tx._id} className="table-row-alt transition-colors duration-150 group" role="row">
 
-                {/* Date */}
                 <td className="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">
                   {formatDate(tx.date)}
                 </td>
 
-                {/* Title + notes + badges */}
                 <td className="px-4 py-3 max-w-[200px]">
                   <div className="flex items-center gap-1.5">
                     <p className="font-semibold text-slate-800 dark:text-slate-200 truncate" title={tx.title}>
                       {tx.title}
                     </p>
-                    {/* ✦ Phase D — Recurring badges */}
+                    {/* Recurring template badge */}
                     {tx.isRecurring && (
                       <span title="Recurring template" aria-label="Recurring transaction">
                         <Repeat size={11} className="text-emerald-500 flex-shrink-0" />
                       </span>
                     )}
+                    {/* Auto-generated copy badge */}
                     {tx.isGeneratedCopy && (
                       <span className="text-[9px] font-bold px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full flex-shrink-0">
                         AUTO
@@ -665,27 +656,22 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
                   )}
                 </td>
 
-                {/* Category */}
                 <td className="px-4 py-3 text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">
                   {tx.category}
                 </td>
 
-                {/* Type badge */}
                 <td className="px-4 py-3 whitespace-nowrap">
                   <TypeBadge type={tx.type} />
                 </td>
 
-                {/* Amount */}
                 <td className="px-4 py-3 whitespace-nowrap">
                   <span className={`font-numeric font-semibold text-sm ${tx.type === 'Income' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                     {tx.type === 'Income' ? '+' : '−'}₹{tx.amount.toLocaleString('en-IN')}
                   </span>
                 </td>
 
-                {/* ✦ Phase D — Edit + Delete actions */}
                 <td className="px-4 py-3 whitespace-nowrap">
                   <div className="flex items-center gap-1.5">
-                    {/* Edit button */}
                     <button
                       onClick={() => setEditTarget(tx)}
                       className="inline-flex items-center justify-center p-2 rounded-lg
@@ -697,8 +683,6 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
                     >
                       <Edit3 size={14} />
                     </button>
-
-                    {/* Delete button */}
                     <button
                       onClick={() => requestDelete(tx)}
                       disabled={deletingId === tx._id}
@@ -719,12 +703,15 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
         </table>
       </div>
 
-      {/* ── Pagination ────────────────────────────────────────────────── */}
+      {/* -- Pagination ------------------------------------------------------- */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-4">
-          <button onClick={() => setPage(p => Math.max(1, p - 1))}
+          <button
+            onClick={() => setPage(p => Math.max(1, p - 1))}
             disabled={page === 1 || isLoading}
-            className="btn-secondary py-2 px-3 disabled:opacity-40" aria-label="Previous page">
+            className="btn-secondary py-2 px-3 disabled:opacity-40"
+            aria-label="Previous page"
+          >
             <ChevronLeft size={15}/>Prev
           </button>
 
@@ -732,7 +719,10 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
             {Array.from({ length: Math.min(totalPages, 7) }).map((_, i) => {
               const pageNum = i + 1;
               return (
-                <button key={pageNum} onClick={() => setPage(pageNum)} disabled={isLoading}
+                <button
+                  key={pageNum}
+                  onClick={() => setPage(pageNum)}
+                  disabled={isLoading}
                   className={[
                     'w-8 h-8 rounded-lg text-xs font-semibold transition-all duration-150',
                     pageNum === page
@@ -741,15 +731,20 @@ const TransactionTable = ({ refreshTrigger = 0, from = '', to = '' }) => {
                   ].join(' ')}
                   aria-current={pageNum === page ? 'page' : undefined}
                   aria-label={`Page ${pageNum}`}
-                >{pageNum}</button>
+                >
+                  {pageNum}
+                </button>
               );
             })}
             {totalPages > 7 && <span className="text-slate-400 text-xs px-1">…{totalPages}</span>}
           </div>
 
-          <button onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+          <button
+            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
             disabled={page === totalPages || isLoading}
-            className="btn-secondary py-2 px-3 disabled:opacity-40" aria-label="Next page">
+            className="btn-secondary py-2 px-3 disabled:opacity-40"
+            aria-label="Next page"
+          >
             Next<ChevronRight size={15}/>
           </button>
         </div>

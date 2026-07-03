@@ -1,63 +1,54 @@
 /**
  * jobs/recurringJob.js
  *
- * Recurring Transaction Scheduler — powered by node-cron
+ * Cron job that automatically clones recurring transactions on their due date.
  *
- * Purpose:
- *   Automatically clones "template" transactions that have `isRecurring: true`
- *   at the appropriate frequency (Daily / Weekly / Monthly) by creating
- *   new Transaction documents that are identical copies except:
- *     - date        → today's date
- *     - isRecurring → false  (copies are not templates themselves)
- *     - isGeneratedCopy → true  (UI can badge them as "Auto")
+ * When a user marks a transaction as recurring (isRecurring: true), it acts
+ * as a template. This job runs every day at 00:05 IST, finds all templates,
+ * and creates new copies for any that are due today based on their frequency
+ * (Daily / Weekly / Monthly).
  *
- * Cron Schedule:
- *   We run ONE cron job at 00:05 every day (5 minutes past midnight).
- *   Inside the handler, we check each recurring transaction's
- *   `lastGeneratedAt` timestamp to determine whether it's due for
- *   a new copy TODAY (daily), THIS WEEK (weekly), or THIS MONTH (monthly).
- *   This avoids running three separate cron jobs.
+ * Why one job instead of three separate crons (daily/weekly/monthly)?
+ *   Simpler to reason about - one place to debug, one log stream to watch.
+ *   Also more resilient to server restarts: if the server was down at midnight,
+ *   the job fires once on startup and catches up anything that was missed.
+ *   lastGeneratedAt prevents double-generation even if the server restarts mid-day.
  *
- * Why check lastGeneratedAt instead of scheduling different crons?
- *   - Simpler to reason about — one place to debug
- *   - Resilient to server restarts — if the server was down at midnight,
- *     the 00:05 job will still fire and catch up correctly
- *   - Prevents duplicate generation even if the server restarts mid-day
- *     (because lastGeneratedAt is updated atomically after each generation)
+ * The original template document is never modified by the generated copies -
+ * only lastGeneratedAt is updated on the template after each successful generation.
+ * Copies have isGeneratedCopy: true so the UI can optionally badge them as "Auto".
  *
- * MERN Data Flow:
- *   node-cron trigger → recurringJob.processRecurring()
- *   → Transaction.find({ isRecurring: true })
- *   → For each: check if due → Transaction.create(copy) → update lastGeneratedAt
- *   → No HTTP request involved — runs entirely on the server
- *
- * Usage:
- *   Called once in server.js AFTER the DB connects:
- *     const { startRecurringJob } = require('./jobs/recurringJob');
- *     startRecurringJob();
+ * Called once in server.js after MongoDB connects:
+ *   const { startRecurringJob } = require('./jobs/recurringJob');
+ *   startRecurringJob();
  */
 
 const cron = require("node-cron");
 const Transaction = require("../models/Transaction");
 
-// ─── Due-date Checkers ────────────────────────────────────────────────────────
+// --- isDueToday ---------------------------------------------------------------
 /**
- * Returns true if a recurring transaction is due to generate a copy TODAY
- * based on its frequency and lastGeneratedAt timestamp.
+ * Checks whether a recurring transaction template is due to generate a copy today.
  *
- * @param {Date|null}  lastGeneratedAt  — When the cron last created a copy
- * @param {string}     frequency        — 'Daily' | 'Weekly' | 'Monthly'
+ * Compares lastGeneratedAt against today's date (normalised to midnight)
+ * to decide based on the transaction's frequency:
+ *   Daily   → at least 1 full day since last generation
+ *   Weekly  → at least 7 days since last generation
+ *   Monthly → last generation was in a previous calendar month
+ *
+ * @param {Date|null} lastGeneratedAt - When the cron last ran for this template
+ * @param {string}    frequency       - "Daily" | "Weekly" | "Monthly"
  * @returns {boolean}
  */
 const isDueToday = (lastGeneratedAt, frequency) => {
   const now = new Date();
 
-  // Never been generated — due immediately on first run
+  // First time this template has ever been processed - generate immediately
   if (!lastGeneratedAt) return true;
 
   const last = new Date(lastGeneratedAt);
 
-  // Normalise to midnight for date-only comparisons
+  // Normalise both dates to midnight so we're comparing calendar days, not timestamps
   const todayMidnight = new Date(
     now.getFullYear(),
     now.getMonth(),
@@ -68,36 +59,34 @@ const isDueToday = (lastGeneratedAt, frequency) => {
     last.getMonth(),
     last.getDate(),
   );
-
   const daysDiff = Math.floor(
     (todayMidnight - lastMidnight) / (1000 * 60 * 60 * 24),
   );
 
   switch (frequency) {
     case "Daily":
-      return daysDiff >= 1; // At least 1 full day since last generation
-
+      return daysDiff >= 1;
     case "Weekly":
-      return daysDiff >= 7; // At least 7 days
-
+      return daysDiff >= 7;
     case "Monthly":
-      // Due if we're in a different month/year from the last generation
+      // Due if we're in a different month or year from when it was last generated
       return (
         now.getMonth() !== last.getMonth() ||
         now.getFullYear() !== last.getFullYear()
       );
-
     default:
       return false;
   }
 };
 
-// ─── Core Processing Function ─────────────────────────────────────────────────
+// --- processRecurring ---------------------------------------------------------
 /**
- * processRecurring — the main logic executed on every cron tick.
- *
- * Fetches all active recurring transactions across ALL users and
+ * Main logic executed on every cron tick (and once on startup).
+ * Fetches all recurring template transactions across all users and
  * generates copies for any that are due today.
+ *
+ * Each template is processed independently - a failure on one doesn't
+ * abort the rest of the job.
  */
 const processRecurring = async () => {
   const startTime = Date.now();
@@ -108,8 +97,8 @@ const processRecurring = async () => {
   let errors = 0;
 
   try {
-    // Fetch all recurring template transactions
-    // (isGeneratedCopy: false ensures we never recurse on auto-generated copies)
+    // Only fetch templates (isGeneratedCopy: false) so we never accidentally
+    // recurse on auto-generated copies and create infinite duplicates
     const templates = await Transaction.find({
       isRecurring: true,
       isGeneratedCopy: false,
@@ -123,28 +112,26 @@ const processRecurring = async () => {
       processed++;
 
       try {
-        if (
-          !isDueToday(template.lastGeneratedAt, template.recurringFrequency)
-        ) {
-          // Not due yet — skip
-          continue;
-        }
+        if (!isDueToday(template.lastGeneratedAt, template.recurringFrequency))
+          continue; // not due yet - skip silently
 
-        // Create a new copy of this transaction for today
+        // Create a new copy for today - same fields as the template except:
+        // date → today, isRecurring → false, isGeneratedCopy → true
         await Transaction.create({
           title: template.title,
           amount: template.amount,
           type: template.type,
           category: template.category,
-          date: new Date(), // Today's date
+          date: new Date(),
           notes: template.notes || "",
           user_id: template.user_id,
-          isRecurring: false, // Copies are not templates
+          isRecurring: false, // copies are not templates themselves
           recurringFrequency: null,
-          isGeneratedCopy: true, // Badge for the UI
+          isGeneratedCopy: true, // UI can badge these as "Auto"
         });
 
-        // Update the template's lastGeneratedAt so we don't double-generate today
+        // Update lastGeneratedAt on the template so we don't re-generate it today
+        // if the server restarts or the job fires again for any reason
         await Transaction.findByIdAndUpdate(template._id, {
           lastGeneratedAt: new Date(),
         });
@@ -160,7 +147,7 @@ const processRecurring = async () => {
           `[RecurringJob] ❌ Failed for template ${template._id}:`,
           templateError.message,
         );
-        // Continue processing remaining templates — don't abort the whole job
+        // Continue with the remaining templates - one failure shouldn't kill the whole job
       }
     }
   } catch (err) {
@@ -172,27 +159,29 @@ const processRecurring = async () => {
 
   const elapsed = Date.now() - startTime;
   console.log(
-    `[RecurringJob] ✅ Done in ${elapsed}ms — ` +
+    `[RecurringJob] ✅ Done in ${elapsed}ms - ` +
       `Checked: ${processed}, Generated: ${generated}, Errors: ${errors}`,
   );
 };
 
-// ─── Job Registration ─────────────────────────────────────────────────────────
+// --- startRecurringJob --------------------------------------------------------
 /**
- * startRecurringJob()
- *
- * Registers the cron schedule and runs a one-time check on startup
- * (in case the server was down at the scheduled time).
+ * Registers the daily cron schedule and runs one immediate check on startup.
  *
  * Cron expression: '5 0 * * *'
- *   ┌─────────────── minute (5)
- *   │ ┌───────────── hour (0 = midnight)
- *   │ │ ┌─────────── day of month (every day)
- *   │ │ │ ┌───────── month (every month)
- *   │ │ │ │ ┌─────── day of week (every day)
+ *   ┌---------- minute (5)
+ *   │ ┌-------- hour (0 = midnight)
+ *   │ │ ┌------ day of month (every day)
+ *   │ │ │ ┌---- month (every month)
+ *   │ │ │ │ ┌-- day of week (every day)
  *   5 0 * * *
  *
- * Called from server.js after the MongoDB connection is established.
+ * Running at 00:05 instead of exactly midnight to avoid any edge cases
+ * where the DB connection is still warming up at 00:00:00.
+ *
+ * The startup run catches anything that was due while the server was down
+ * (e.g. the server was restarted at 00:10 after missing the scheduled run).
+ * This is called from server.js after the MongoDB connection is established.
  */
 const startRecurringJob = () => {
   if (!cron.validate("5 0 * * *")) {
@@ -200,15 +189,13 @@ const startRecurringJob = () => {
     return;
   }
 
-  // Schedule the daily job
   cron.schedule("5 0 * * *", processRecurring, {
-    timezone: "Asia/Kolkata", // IST — matches the ₹ Indian user base
+    timezone: "Asia/Kolkata", // IST - matches the ₹ Indian user base
   });
 
-  console.log("[RecurringJob] 📅 Scheduled — runs daily at 00:05 IST.");
+  console.log("[RecurringJob] 📅 Scheduled - runs daily at 00:05 IST.");
 
-  // Run once immediately on startup to catch up any missed generations
-  // (e.g., if the server was restarted at 00:10)
+  // Fire once immediately on startup to catch any missed generations
   processRecurring().catch((err) => {
     console.error("[RecurringJob] Startup run failed:", err.message);
   });

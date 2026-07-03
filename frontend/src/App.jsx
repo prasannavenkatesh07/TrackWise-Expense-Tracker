@@ -1,52 +1,50 @@
 /**
- * App.jsx — Root Application Component  (Phase E — Final & Sprint 4)
+ * App.jsx - Root component and route configuration
  *
- * All routes and providers complete across Phases A–E:
- * - ToastProvider + ToastContainer — global notification stack
- * - Onboarding wizard — shown once to new users on first dashboard visit
- * - All protected routes wired: dashboard, history, settings, reports, budgets
+ * Provider order (outermost → innermost):
+ *   ThemeProvider   - applies/removes `dark` class on <html>
+ *   BrowserRouter   - enables React Router hooks throughout the tree
+ *   AuthProvider    - JWT session management + axios default header
+ *   ToastProvider   - global toast notification state
+ *   ErrorBoundary   - catches rendering errors before they crash the whole app
  *
- * Provider order (outermost first):
- * ThemeProvider  → applies dark class to <html>
- * BrowserRouter  → enables React Router hooks
- * AuthProvider   → JWT session management + axios headers
- * ToastProvider  → global toast notification state  ✦
- * ErrorBoundary  → catches rendering errors
+ * Route structure:
+ *   PublicRoute  - redirects logged-in users away from /login, /register etc.
+ *   ProtectedRoute - redirects anonymous users to /login, otherwise renders
+ *                    Navbar + page content + the floating Chatbot widget
  *
  * MERN Data Flow:
- * AuthContext reads localStorage JWT on mount → validates via GET /api/auth/me
- * → sets `user` state → ProtectedRoute either renders children or redirects.
+ *   On load → AuthContext reads localStorage JWT → calls GET /api/auth/me
+ *   → sets user state → ProtectedRoute renders or redirects accordingly
  */
 
 import { Component } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
-import { AuthProvider, useAuth } from './context/AuthContext';
-import { ThemeProvider } from './context/ThemeContext';
-import { ToastProvider } from './context/ToastContext';
+import { AuthProvider, useAuth }   from './context/AuthContext';
+import { ThemeProvider }           from './context/ThemeContext';
+import { ToastProvider }           from './context/ToastContext';
 
-// Layout
-import Navbar from './components/Navbar';
+// Layout components
+import Navbar         from './components/Navbar';
 import ToastContainer from './components/ToastContainer';
-import Chatbot from './components/Chatbot'; // ✦ Sprint 4: Financial Copilot
+import Chatbot        from './components/Chatbot';
 
 // Pages
-import LoginPage     from './pages/LoginPage';
-import RegisterPage  from './pages/RegisterPage';
-import DashboardPage from './pages/DashboardPage';
-import HistoryPage   from './pages/HistoryPage';
-import NotFoundPage  from './pages/NotFoundPage';
-
-// Phase C pages — fully implemented
-import SettingsPage from './pages/SettingsPage';
-import ReportsPage  from './pages/ReportsPage';
-import BudgetsPage  from './pages/BudgetsPage';
-
-// Phase 4 Auth pages (OTP Upgrade)
+import LoginPage          from './pages/LoginPage';
+import RegisterPage       from './pages/RegisterPage';
+import DashboardPage      from './pages/DashboardPage';
+import HistoryPage        from './pages/HistoryPage';
+import NotFoundPage       from './pages/NotFoundPage';
+import SettingsPage       from './pages/SettingsPage';
+import ReportsPage        from './pages/ReportsPage';
+import BudgetsPage        from './pages/BudgetsPage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import ResetPasswordPage  from './pages/ResetPasswordPage';
 import VerifyEmailPage    from './pages/VerifyEmailPage';
 
-// ── React Error Boundary ──────────────────────────────────────────────────────
+// --- Error boundary -----------------------------------------------------------
+// React's class-based error boundary - hooks can't do this yet.
+// Catches rendering errors that slip past normal try/catch (e.g. inside JSX).
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -80,6 +78,7 @@ class ErrorBoundary extends Component {
             <p className="text-sm text-slate-500 dark:text-slate-400">
               An unexpected error occurred. Your data is safe.
             </p>
+            {/* Only show the raw error message in development - not in prod */}
             {import.meta.env.DEV && (
               <pre className="text-left text-xs bg-slate-100 dark:bg-slate-800 rounded-lg p-3 overflow-auto max-h-32 text-rose-600">
                 {this.state.error?.message}
@@ -96,7 +95,9 @@ class ErrorBoundary extends Component {
   }
 }
 
-// ── Full-Screen Loading Spinner ───────────────────────────────────────────────
+// --- Full-screen loading spinner ----------------------------------------------
+// Shown while AuthContext is doing the initial /api/auth/me check on page load -
+// prevents a flash of the login page before the session is confirmed
 const AppLoadingScreen = () => (
   <div className="min-h-screen bg-slate-50 dark:bg-slate-900 flex flex-col items-center justify-center gap-4">
     <div className="relative">
@@ -111,15 +112,14 @@ const AppLoadingScreen = () => (
   </div>
 );
 
-// ── Protected Route Guard ─────────────────────────────────────────────────────
+// --- Protected route ----------------------------------------------------------
+// Renders the full app shell (Navbar + page + Chatbot) for authenticated users.
+// Redirects to /login for anyone who isn't logged in.
+// Returns null while isLoading so we don't flash /login before the /me check finishes.
 const ProtectedRoute = () => {
   const { isAuthenticated, isLoading } = useAuth();
-
-  if (isLoading) return null;
-
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
+  if (isLoading)       return null;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 transition-colors duration-300 relative">
@@ -127,43 +127,49 @@ const ProtectedRoute = () => {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 page-enter">
         <Outlet />
       </main>
-      
-      {/* ✦ Mounted globally across all protected pages */}
+      {/* Chatbot is mounted here so it persists across page navigations
+          without unmounting and losing chat history */}
       <Chatbot />
     </div>
   );
 };
 
-// ── Public Route Guard ────────────────────────────────────────────────────────
+// --- Public route -------------------------------------------------------------
+// Redirects already-logged-in users away from /login and /register.
+// Returning null during isLoading prevents a flash of the login page on refresh.
 const PublicRoute = () => {
   const { isAuthenticated, isLoading } = useAuth();
-  if (isLoading) return null;
+  if (isLoading)      return null;
   if (isAuthenticated) return <Navigate to="/dashboard" replace />;
   return <Outlet />;
 };
 
-// ── App Inner ─────────────────────────────────────────────────────────────────
+// --- App inner ----------------------------------------------------------------
+// Separated from the root App so it can call useAuth() -
+// hooks can't be called in the same component that provides the context
 const AppInner = () => {
   const { isLoading } = useAuth();
   if (isLoading) return <AppLoadingScreen />;
 
   return (
     <>
+      {/* ToastContainer renders the floating notification stack above everything */}
       <ToastContainer />
 
       <Routes>
+        {/* Default redirect */}
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
+        {/* Public routes - redirect to dashboard if already logged in */}
         <Route element={<PublicRoute />}>
           <Route path="/login"           element={<LoginPage />} />
           <Route path="/register"        element={<RegisterPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-          
-          {/* ✦ Updated for OTP query param routing */}
           <Route path="/reset-password"  element={<ResetPasswordPage />} />
           <Route path="/verify-email"    element={<VerifyEmailPage />} />
         </Route>
 
+        {/* Protected routes - redirect to /login if not authenticated */}
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/history"   element={<HistoryPage />} />
@@ -178,21 +184,19 @@ const AppInner = () => {
   );
 };
 
-// ── Root App ──────────────────────────────────────────────────────────────────
-const App = () => {
-  return (
-    <ThemeProvider>
-      <BrowserRouter>
-        <AuthProvider>
-          <ToastProvider>
-            <ErrorBoundary>
-              <AppInner />
-            </ErrorBoundary>
-          </ToastProvider>
-        </AuthProvider>
-      </BrowserRouter>
-    </ThemeProvider>
-  );
-};
+// --- Root App -----------------------------------------------------------------
+const App = () => (
+  <ThemeProvider>
+    <BrowserRouter>
+      <AuthProvider>
+        <ToastProvider>
+          <ErrorBoundary>
+            <AppInner />
+          </ErrorBoundary>
+        </ToastProvider>
+      </AuthProvider>
+    </BrowserRouter>
+  </ThemeProvider>
+);
 
 export default App;

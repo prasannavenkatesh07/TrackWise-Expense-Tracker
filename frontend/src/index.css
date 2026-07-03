@@ -1,48 +1,53 @@
 /*
- * index.css — Global Styles for Smart Expense Tracker
+ * index.css - Global styles for TrackWise
  *
- * Structure:
- *   1. Tailwind Directives
- *   2. CSS Custom Properties (Design Tokens) — Light & Dark
- *   3. Global Base Styles
- *   4. Utility / Component Styles
- *   5. Chart.js Canvas Overrides
- *   6. Scrollbar Styling
- *   7. Transition Helpers
+ * Sections:
+ *   1. Tailwind directives
+ *   2. CSS custom properties (design tokens) - light and dark
+ *   3. Global base styles
+ *   4. Reusable component utility classes
+ *   5. Chart.js canvas notes
+ *   6. Custom scrollbar
+ *   7. Page transitions and progress bar
+ *   8. Insight alert banners
+ *   9. Table row alternating colours
+ *  10. Loading skeleton
  */
 
-/* ── 1. Tailwind Directives ────────────────────────────────────────────────── */
+/* -- 1. Tailwind directives ------------------------------------------------- */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ── 2. CSS Custom Properties ──────────────────────────────────────────────── */
+/* -- 2. CSS custom properties ---------------------------------------------- */
 /*
- * Defining design tokens as CSS variables allows non-Tailwind CSS (e.g., Chart.js
- * canvas styles, scrollbars) to stay in sync with the active theme.
- * Tailwind's dark: classes handle component-level theming;
- * these variables handle everything else.
+ * Defining theme values as CSS variables rather than hardcoding them lets
+ * non-Tailwind things (Chart.js canvas, scrollbars, the progress bar fill)
+ * stay in sync with the active theme automatically.
+ *
+ * Tailwind dark: classes handle component-level theming.
+ * These variables handle everything else that Tailwind can't reach.
  */
 
 :root {
   /* Backgrounds */
-  --bg-canvas: #f8fafc;           /* slate-50 — main page background */
-  --bg-card: #ffffff;             /* white cards */
-  --bg-navbar: #0f172a;           /* slate-900 — top nav */
-  --bg-muted: #f1f5f9;            /* slate-100 — muted surfaces */
+  --bg-canvas: #f8fafc; /* slate-50  - main page background */
+  --bg-card: #ffffff; /* white cards */
+  --bg-navbar: #0f172a; /* slate-900 - top nav */
+  --bg-muted: #f1f5f9; /* slate-100 - muted surfaces */
   --bg-input: #ffffff;
 
   /* Borders */
-  --border-default: #e2e8f0;      /* slate-200 */
-  --border-subtle: #f1f5f9;       /* slate-100 */
+  --border-default: #e2e8f0; /* slate-200 */
+  --border-subtle: #f1f5f9; /* slate-100 */
 
   /* Text */
-  --text-primary: #0f172a;        /* slate-900 */
-  --text-secondary: #475569;      /* slate-600 */
-  --text-muted: #94a3b8;          /* slate-400 */
+  --text-primary: #0f172a; /* slate-900 */
+  --text-secondary: #475569; /* slate-600 */
+  --text-muted: #94a3b8; /* slate-400 */
   --text-on-navy: #f8fafc;
 
-  /* Accent */
+  /* Accent colours */
   --accent-emerald: #10b981;
   --accent-emerald-light: #d1fae5;
   --accent-rose: #f43f5e;
@@ -52,37 +57,40 @@
   --accent-blue: #3b82f6;
 
   /* Shadows */
-  --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 4px 16px -2px rgb(0 0 0 / 0.08);
-  --shadow-card-hover: 0 4px 6px -1px rgb(0 0 0 / 0.08), 0 12px 32px -4px rgb(0 0 0 / 0.12);
+  --shadow-card:
+    0 1px 3px 0 rgb(0 0 0 / 0.06), 0 4px 16px -2px rgb(0 0 0 / 0.08);
+  --shadow-card-hover:
+    0 4px 6px -1px rgb(0 0 0 / 0.08), 0 12px 32px -4px rgb(0 0 0 / 0.12);
 
-  /* Chart.js — referenced in utils/chartDefaults.js */
+  /* Chart.js reads these via getComputedStyle in ExpenseChart.jsx */
   --chart-grid: #f1f5f9;
   --chart-text: #94a3b8;
 }
 
-/* Dark Mode Tokens — applied when `dark` class is on <html> */
+/* Dark mode tokens - active when ThemeContext adds `dark` to <html> */
 .dark {
-  --bg-canvas: #0f172a;           /* slate-900 */
-  --bg-card: #1e293b;             /* slate-800 */
-  --bg-navbar: #020617;           /* slate-950 */
-  --bg-muted: #1e293b;            /* slate-800 */
+  --bg-canvas: #0f172a; /* slate-900 */
+  --bg-card: #1e293b; /* slate-800 */
+  --bg-navbar: #020617; /* slate-950 */
+  --bg-muted: #1e293b; /* slate-800 */
   --bg-input: #1e293b;
 
-  --border-default: #334155;      /* slate-700 */
-  --border-subtle: #1e293b;       /* slate-800 */
+  --border-default: #334155; /* slate-700 */
+  --border-subtle: #1e293b; /* slate-800 */
 
-  --text-primary: #f1f5f9;        /* slate-100 */
-  --text-secondary: #94a3b8;      /* slate-400 */
-  --text-muted: #475569;          /* slate-600 */
+  --text-primary: #f1f5f9; /* slate-100 */
+  --text-secondary: #94a3b8; /* slate-400 */
+  --text-muted: #475569; /* slate-600 */
 
   --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.3), 0 4px 16px -2px rgb(0 0 0 / 0.4);
-  --shadow-card-hover: 0 4px 6px -1px rgb(0 0 0 / 0.35), 0 12px 32px -4px rgb(0 0 0 / 0.5);
+  --shadow-card-hover:
+    0 4px 6px -1px rgb(0 0 0 / 0.35), 0 12px 32px -4px rgb(0 0 0 / 0.5);
 
   --chart-grid: #1e293b;
   --chart-text: #475569;
 }
 
-/* ── 3. Global Base Styles ──────────────────────────────────────────────────── */
+/* -- 3. Global base styles ------------------------------------------------- */
 @layer base {
   *,
   *::before,
@@ -91,54 +99,62 @@
   }
 
   html {
-    /* Smooth theme transitions — all elements animate their colour changes */
-    transition: background-color 0.3s ease, color 0.3s ease;
+    /* Smooth colour transitions when the theme toggle fires */
+    transition:
+      background-color 0.3s ease,
+      color 0.3s ease;
     scroll-behavior: smooth;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
   body {
-    font-family: 'Sora', ui-sans-serif, system-ui, sans-serif;
+    font-family: "Sora", ui-sans-serif, system-ui, sans-serif;
     background-color: var(--bg-canvas);
     color: var(--text-primary);
     min-height: 100vh;
     line-height: 1.6;
   }
 
-  /* Semantic heading scale */
-  h1, h2, h3, h4, h5, h6 {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
     font-weight: 700;
     line-height: 1.25;
     letter-spacing: -0.02em;
     color: var(--text-primary);
   }
 
-  /* Numeric data — monospace for columnar alignment in tables */
+  /* Used on currency amounts and table numbers -
+     tabular-nums keeps digits the same width so columns line up cleanly */
   .font-numeric {
-    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
     font-variant-numeric: tabular-nums;
   }
 }
 
-/* ── 4. Component Utility Classes ───────────────────────────────────────────── */
+/* -- 4. Reusable component utility classes --------------------------------- */
 @layer components {
-
-  /* ── Card ──────────────────────────────────────────────────────────────── */
+  /* Card - the main surface for dashboard widgets and form panels */
   .card {
     background-color: var(--bg-card);
     border: 1px solid var(--border-default);
-    border-radius: 1.25rem;       /* rounded-2xl */
-    padding: 1.5rem;              /* p-6 */
+    border-radius: 1.25rem; /* rounded-2xl */
+    padding: 1.5rem; /* p-6 */
     box-shadow: var(--shadow-card);
-    transition: box-shadow 0.3s ease, transform 0.3s ease;
+    transition:
+      box-shadow 0.3s ease,
+      transform 0.3s ease;
   }
 
   .card:hover {
     box-shadow: var(--shadow-card-hover);
   }
 
-  /* ── Primary Button ────────────────────────────────────────────────────── */
+  /* Primary action button - emerald, used for form submits and main CTAs */
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl
            bg-emerald-500 text-white font-semibold text-sm
@@ -148,7 +164,7 @@
            disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
   }
 
-  /* ── Secondary Button ──────────────────────────────────────────────────── */
+  /* Secondary button - neutral slate, used for cancel/back actions */
   .btn-secondary {
     @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl
            bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200
@@ -159,7 +175,7 @@
            disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
-  /* ── Danger Button ─────────────────────────────────────────────────────── */
+  /* Danger button - soft rose background, used for delete actions */
   .btn-danger {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg
            bg-rose-50 dark:bg-rose-900/30 text-rose-500
@@ -168,7 +184,7 @@
            focus:outline-none focus:ring-2 focus:ring-rose-400;
   }
 
-  /* ── Ghost Button (Icon only) ──────────────────────────────────────────── */
+  /* Ghost button - icon-only buttons in toolbars and headers */
   .btn-ghost {
     @apply inline-flex items-center justify-center p-2 rounded-lg
            text-slate-500 dark:text-slate-400
@@ -177,7 +193,7 @@
            focus:outline-none focus:ring-2 focus:ring-slate-400;
   }
 
-  /* ── Form Input ─────────────────────────────────────────────────────────── */
+  /* Text input and textarea - used everywhere in forms */
   .input-field {
     @apply w-full px-4 py-2.5 rounded-xl text-sm font-medium
            bg-slate-50 dark:bg-slate-800
@@ -188,18 +204,18 @@
            transition-all duration-200;
   }
 
-  /* ── Select / Dropdown ─────────────────────────────────────────────────── */
+  /* Native select - same base as input-field */
   .select-field {
     @apply input-field appearance-none cursor-pointer;
   }
 
-  /* ── Form Label ─────────────────────────────────────────────────────────── */
+  /* Form label - small caps above each input field */
   .form-label {
     @apply block text-xs font-semibold uppercase tracking-wider
            text-slate-500 dark:text-slate-400 mb-1.5;
   }
 
-  /* ── Badge ──────────────────────────────────────────────────────────────── */
+  /* Badge base - used by badge-income and badge-expense */
   .badge {
     @apply inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold;
   }
@@ -212,19 +228,19 @@
     @apply badge bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400;
   }
 
-  /* ── Section heading ────────────────────────────────────────────────────── */
+  /* Card section heading */
   .section-title {
     @apply text-base font-bold text-slate-800 dark:text-slate-100 tracking-tight;
   }
 
-  /* ── Stat Number (currency displays) ───────────────────────────────────── */
+  /* Large currency display on stat cards */
   .stat-number {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-variant-numeric: tabular-nums;
     @apply text-2xl font-semibold tracking-tight;
   }
 
-  /* ── Page Section Wrapper ───────────────────────────────────────────────── */
+  /* Used as the outer wrapper on each page section card */
   .page-section {
     @apply bg-white dark:bg-slate-800
            rounded-2xl border border-slate-100 dark:border-slate-700
@@ -232,54 +248,59 @@
   }
 }
 
-/* ── 5. Chart.js Canvas Overrides ───────────────────────────────────────────── */
+/* -- 5. Chart.js canvas ---------------------------------------------------- */
 /*
- * Chart.js renders to a <canvas> — we can't target it with Tailwind dark: classes
- * directly. Instead, we override CSS variables which are read in chartDefaults.js.
+ * Chart.js renders to <canvas> - Tailwind dark: classes can't reach canvas elements.
+ * Colours are instead read from the CSS variables above via getComputedStyle()
+ * in ExpenseChart.jsx, so the chart stays in sync with the theme toggle.
  */
 canvas {
   display: block;
   max-width: 100%;
 }
 
-/* ── 6. Custom Scrollbar ─────────────────────────────────────────────────────── */
-/* Thin scrollbar for modern browsers */
+/* -- 6. Custom scrollbar --------------------------------------------------- */
+/* Thin, unobtrusive scrollbar - falls back to the OS default on Firefox */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
-
 ::-webkit-scrollbar-track {
   background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
   background-color: #cbd5e1; /* slate-300 */
   border-radius: 999px;
 }
-
 .dark ::-webkit-scrollbar-thumb {
   background-color: #334155; /* slate-700 */
 }
-
 ::-webkit-scrollbar-thumb:hover {
   background-color: #94a3b8; /* slate-400 */
 }
 
-/* ── 7. Page Transition & Loader ─────────────────────────────────────────────── */
-/* Fade-in applied to route pages to smooth navigation */
+/* -- 7. Page transitions and progress bar ---------------------------------- */
+/* Fade-in applied to route pages to make navigation feel less abrupt */
 .page-enter {
   animation: fade-in 0.25s ease-out;
 }
 
-/* Budget Progress Bar — using CSS variable for Tailwind's JIT limitation with
-   dynamic widths. Set --progress-width on the element via inline style. */
+/*
+ * Budget progress bar fill.
+ * Using a CSS variable for the width because Tailwind JIT can't generate
+ * arbitrary dynamic width classes at runtime - the width is set via
+ * an inline style={{ '--progress-width': `${pct}%` }} on the element.
+ */
 .progress-bar-fill {
   width: var(--progress-width, 0%);
   transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* ── 8. Insight Alert Banners ─────────────────────────────────────────────────── */
+/* -- 8. Insight alert banners ---------------------------------------------- */
+/*
+ * Base style for SmartInsights banners.
+ * animate-slide-down is a custom keyframe defined in tailwind.config.js.
+ */
 .alert-banner {
   @apply flex items-start gap-3 p-4 rounded-xl border text-sm font-medium
          animate-slide-down;
@@ -300,8 +321,8 @@ canvas {
          dark:bg-rose-900/20 dark:border-rose-700/50 dark:text-rose-300;
 }
 
-/* ── 9. Table Row Alternating Colours ────────────────────────────────────────── */
-/* Used on the History page table — mirrors blueprint spec */
+/* -- 9. Table row alternating colours -------------------------------------- */
+/* Applied to TransactionTable rows via the table-row-alt class */
 .table-row-alt:nth-child(even) {
   @apply bg-slate-50 dark:bg-slate-800/50;
 }
@@ -310,7 +331,12 @@ canvas {
   @apply bg-slate-100 dark:bg-slate-700/50 transition-colors duration-150;
 }
 
-/* ── 10. Loading Skeleton ─────────────────────────────────────────────────────── */
+/* -- 10. Loading skeleton -------------------------------------------------- */
+/*
+ * Shimmer animation used on skeleton placeholder elements while data loads.
+ * Background position is animated across 200% width to create the sweep effect.
+ * The shimmer keyframe itself is defined in tailwind.config.js.
+ */
 .skeleton {
   background: linear-gradient(
     90deg,

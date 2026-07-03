@@ -1,23 +1,38 @@
 /**
- * controllers/authController.js  (OTP Upgrade & SendGrid Integration)
+ * controllers/authController.js
+ *
+ * Handles all authentication logic: registration with OTP email verification,
+ * login, forgot/reset password, Google OAuth, and account management.
+ *
+ * Email is sent via SendGrid. There's a commented-out Nodemailer fallback below
+ * in case I need to switch back to Gmail SMTP - see the comment block for steps.
+ *
+ * OTP flow for registration:
+ *   POST /register  → generates OTP → emails it → user calls /verify-email with the code
+ *
+ * OTP flow for password reset:
+ *   POST /forgotpassword → generates OTP → emails it → user calls /reset-password
  */
 
 const crypto = require("crypto");
 const { validationResult } = require("express-validator");
 const { OAuth2Client } = require("google-auth-library");
-const sgMail = require("@sendgrid/mail"); // ✦ Swapped to SendGrid
+const sgMail = require("@sendgrid/mail"); // currently using SendGrid
+// const nodemailer      = require("nodemailer"); // fallback - see below
 const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Budget = require("../models/Budget");
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-sgMail.setApiKey(process.env.SENDGRID_API_KEY); // ✦ Initialize SendGrid
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// ── Helper: Send Email via SendGrid HTTP API ──────────────────────────────────
+// --- Email Helper (SendGrid) --------------------------------------------------
+// EMAIL_USER must be the exact sender address verified in the SendGrid dashboard -
+// even one character off and the whole send fails silently
 const sendEmail = async (options) => {
   const msg = {
     to: options.email,
-    from: process.env.EMAIL_USER, // ✦ MUST be the exact email you verified in SendGrid
+    from: process.env.EMAIL_USER,
     subject: options.subject,
     html: options.html,
   };
@@ -25,15 +40,44 @@ const sendEmail = async (options) => {
   try {
     await sgMail.send(msg);
   } catch (error) {
-    console.error("Email Service Error:", error);
-    if (error.response) {
-      console.error(error.response.body);
-    }
+    console.error("SendGrid error:", error);
+    if (error.response) console.error(error.response.body);
     throw new Error("Failed to send email via SendGrid.");
   }
 };
 
-// ── Helper: build and send the JWT response ───────────────────────────────────
+/* -- Nodemailer fallback (swap in if SendGrid stops working) ------------------
+   To switch:
+   1. npm install nodemailer
+   2. Uncomment the nodemailer require at the top
+   3. Comment out the SendGrid sendEmail above and uncomment this one
+
+const sendEmail = async (options) => {
+  const transporter = nodemailer.createTransport({
+    host:   'smtp.gmail.com',
+    port:   465,
+    secure: true,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+    pool:              true,
+    connectionTimeout: 10000,
+    socketTimeout:     10000,
+  });
+
+  await transporter.sendMail({
+    from:    `TrackWise <${process.env.EMAIL_USER}>`,
+    to:      options.email,
+    subject: options.subject,
+    html:    options.html,
+  });
+};
+*/
+
+// --- Helper: Send JWT in the response ----------------------------------------
+// Called at the end of login, verifyEmail, resetPassword, and googleLogin -
+// keeps the response shape consistent across all auth endpoints
 const sendTokenResponse = (user, statusCode, res) => {
   const token = user.getSignedJwtToken();
   res.status(statusCode).json({
@@ -51,22 +95,29 @@ const sendTokenResponse = (user, statusCode, res) => {
   });
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   POST /api/auth/register
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   POST /api/auth/register ----------------------------------------
+// @desc    Create a new user account and send an OTP verification email
+// @access  Public
 const register = async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty())
-      return res.status(400).json({ success: false, message: errors.array()[0].msg });
+      return res
+        .status(400)
+        .json({ success: false, message: errors.array()[0].msg });
 
     const { name, email, password, monthlyBudget } = req.body;
 
     let user = await User.findOne({ email: email.toLowerCase() });
 
     if (user) {
+      // If the account exists but was never verified, let them re-register -
+      // just update the details and send a fresh OTP
       if (user.isVerified) {
-        return res.status(409).json({ success: false, message: "An account with this email already exists." });
+        return res.status(409).json({
+          success: false,
+          message: "An account with this email already exists.",
+        });
       }
       user.name = name;
       user.password = password;
@@ -84,15 +135,14 @@ const register = async (req, res, next) => {
     const otp = user.getOTP();
     await user.save();
 
+    // HTML email template - styled to match the TrackWise brand colours
     const message = `
       <div style="font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; padding: 50px 20px;">
         <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0;">
-          
           <div style="background-color: #0f172a; padding: 30px 20px; text-align: center;">
             <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: 700; letter-spacing: 1px;">TrackWise</h1>
             <p style="color: #10b981; font-size: 11px; font-weight: 700; letter-spacing: 2px; margin: 5px 0 0 0; text-transform: uppercase;">Expense Tracker</p>
           </div>
-
           <div style="padding: 40px 30px; text-align: center;">
             <h2 style="color: #334155; font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 10px;">Verify your email</h2>
             <p style="color: #64748b; font-size: 16px; line-height: 1.5; margin-bottom: 30px;">
@@ -101,56 +151,66 @@ const register = async (req, res, next) => {
             <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 28px 24px 20px 24px; margin-bottom: 30px;">
               <span style="font-size: 36px; font-weight: bold; color: #10b981; letter-spacing: 12px; font-family: monospace; display: inline-block; padding-left: 12px; line-height: 1; vertical-align: middle;">${otp}</span>
             </div>
-            <p style="color: #94a3b8; font-size: 14px; margin-bottom: 30px;">
-              This code is valid for <strong>15 minutes</strong>.
-            </p>
+            <p style="color: #94a3b8; font-size: 14px; margin-bottom: 30px;">This code is valid for <strong>15 minutes</strong>.</p>
             <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 0 0 20px 0;" />
-            <p style="color: #64748b; font-size: 12px; line-height: 1.5; margin: 0;">
-              If you didn't request this email, you can safely ignore it.
-            </p>
-            <p style="color: #64748b; font-size: 12px; margin-top: 8px;">
-              &copy; ${new Date().getFullYear()} TrackWise
-            </p>
+            <p style="color: #64748b; font-size: 12px; line-height: 1.5; margin: 0;">If you didn't request this email, you can safely ignore it.</p>
+            <p style="color: #64748b; font-size: 12px; margin-top: 8px;">&copy; ${new Date().getFullYear()} TrackWise</p>
           </div>
         </div>
       </div>
     `;
 
     try {
-      await sendEmail({ email: user.email, subject: "TrackWise - Verify your email", html: message });
-      res.status(200).json({ success: true, message: "Verification OTP sent to email." });
+      await sendEmail({
+        email: user.email,
+        subject: "TrackWise - Verify your email",
+        html: message,
+      });
+      res
+        .status(200)
+        .json({ success: true, message: "Verification OTP sent to email." });
     } catch (error) {
+      // If the email fails, wipe the OTP so the user isn't stuck with a
+      // broken unverified account that can never be verified
       user.otp = undefined;
       user.otpExpire = undefined;
       await user.save({ validateBeforeSave: false });
-      return res.status(500).json({ success: false, message: "Email could not be sent." });
+      return res
+        .status(500)
+        .json({ success: false, message: "Email could not be sent." });
     }
   } catch (error) {
     next(error);
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   POST /api/auth/verify-email
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   POST /api/auth/verify-email ------------------------------------
+// @desc    Confirm the OTP sent during registration
+// @access  Public
 const verifyEmail = async (req, res, next) => {
   try {
     const { email, otp } = req.body;
     if (!email || !otp)
-      return res.status(400).json({ success: false, message: "Email and OTP are required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email and OTP are required." });
 
+    // Hash the submitted OTP and compare against the stored hash -
+    // we never store the plain OTP, only the sha256 digest
     const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
 
     const user = await User.findOne({
       email: email.toLowerCase(),
       otp: hashedOtp,
-      otpExpire: { $gt: Date.now() },
+      otpExpire: { $gt: Date.now() }, // make sure it hasn't expired
     });
 
-    if (!user) {
-      return res.status(400).json({ success: false, message: "Invalid or expired OTP." });
-    }
+    if (!user)
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid or expired OTP." });
 
+    // Mark verified and clear the OTP fields - they're not needed anymore
     user.isVerified = true;
     user.otp = undefined;
     user.otpExpire = undefined;
@@ -162,22 +222,28 @@ const verifyEmail = async (req, res, next) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   POST /api/auth/resend-otp
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   POST /api/auth/resend-otp --------------------------------------
+// @desc    Generate and email a fresh OTP if the previous one expired
+// @access  Public
 const resendOTP = async (req, res, next) => {
   try {
     const { email } = req.body;
-    if (!email) 
-      return res.status(400).json({ success: false, message: "Email is required." });
+    if (!email)
+      return res
+        .status(400)
+        .json({ success: false, message: "Email is required." });
 
     const user = await User.findOne({ email: email.toLowerCase() });
 
-    if (!user) 
-      return res.status(400).json({ success: false, message: "Account not found." });
-      
-    if (user.isVerified) 
-      return res.status(400).json({ success: false, message: "This account is already verified. Please log in." });
+    if (!user)
+      return res
+        .status(400)
+        .json({ success: false, message: "Account not found." });
+    if (user.isVerified)
+      return res.status(400).json({
+        success: false,
+        message: "This account is already verified. Please log in.",
+      });
 
     const otp = user.getOTP();
     await user.save({ validateBeforeSave: false });
@@ -185,12 +251,10 @@ const resendOTP = async (req, res, next) => {
     const message = `
       <div style="font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; padding: 50px 20px;">
         <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0;">
-          
           <div style="background-color: #0f172a; padding: 30px 20px; text-align: center;">
             <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: 700; letter-spacing: 1px;">TrackWise</h1>
             <p style="color: #10b981; font-size: 11px; font-weight: 700; letter-spacing: 2px; margin: 5px 0 0 0; text-transform: uppercase;">Expense Tracker</p>
           </div>
-
           <div style="padding: 40px 30px; text-align: center;">
             <h2 style="color: #334155; font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 10px;">New Verification Code</h2>
             <p style="color: #64748b; font-size: 16px; line-height: 1.5; margin-bottom: 30px;">
@@ -199,50 +263,61 @@ const resendOTP = async (req, res, next) => {
             <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 28px 24px 20px 24px; margin-bottom: 30px;">
               <span style="font-size: 36px; font-weight: bold; color: #10b981; letter-spacing: 12px; font-family: monospace; display: inline-block; padding-left: 12px; line-height: 1; vertical-align: middle;">${otp}</span>
             </div>
-            <p style="color: #94a3b8; font-size: 14px; margin-bottom: 30px;">
-              This code is valid for <strong>15 minutes</strong>.
-            </p>
+            <p style="color: #94a3b8; font-size: 14px; margin-bottom: 30px;">This code is valid for <strong>15 minutes</strong>.</p>
             <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 0 0 20px 0;" />
-            <p style="color: #64748b; font-size: 12px; line-height: 1.5; margin: 0;">
-              If you didn't request this email, you can safely ignore it.
-            </p>
-            <p style="color: #64748b; font-size: 12px; margin-top: 8px;">
-              &copy; ${new Date().getFullYear()} TrackWise
-            </p>
+            <p style="color: #64748b; font-size: 12px; line-height: 1.5; margin: 0;">If you didn't request this email, you can safely ignore it.</p>
+            <p style="color: #64748b; font-size: 12px; margin-top: 8px;">&copy; ${new Date().getFullYear()} TrackWise</p>
           </div>
         </div>
       </div>
     `;
 
     try {
-      await sendEmail({ email: user.email, subject: "TrackWise - New Verification Code", html: message });
-      res.status(200).json({ success: true, message: "A new verification code has been sent." });
+      await sendEmail({
+        email: user.email,
+        subject: "TrackWise - New Verification Code",
+        html: message,
+      });
+      res.status(200).json({
+        success: true,
+        message: "A new verification code has been sent.",
+      });
     } catch (error) {
       user.otp = undefined;
       user.otpExpire = undefined;
       await user.save({ validateBeforeSave: false });
-      return res.status(500).json({ success: false, message: "Email could not be sent." });
+      return res
+        .status(500)
+        .json({ success: false, message: "Email could not be sent." });
     }
   } catch (error) {
     next(error);
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   POST /api/auth/login
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   POST /api/auth/login -------------------------------------------
+// @desc    Authenticate a user and return a JWT
+// @access  Public
 const login = async (req, res, next) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty())
-      return res.status(400).json({ success: false, message: errors.array()[0].msg });
+      return res
+        .status(400)
+        .json({ success: false, message: errors.array()[0].msg });
 
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email: email.toLowerCase() }).select("+password");
+    // Need to explicitly select password since it's select:false in the schema
+    const user = await User.findOne({ email: email.toLowerCase() }).select(
+      "+password",
+    );
 
+    // Intentionally vague error message - don't reveal whether the email exists
     if (!user || !(await user.matchPassword(password)))
-      return res.status(401).json({ success: false, message: "Invalid email or password." });
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid email or password." });
 
     if (!user.isVerified)
       return res.status(403).json({
@@ -257,22 +332,35 @@ const login = async (req, res, next) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   POST /api/auth/forgotpassword
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   POST /api/auth/forgotpassword -----------------------------------
+// @desc    Send a password reset OTP to the user's email
+// @access  Public
 const forgotPassword = async (req, res, next) => {
   try {
     const { email } = req.body;
     if (!email)
-      return res.status(400).json({ success: false, message: "Email is required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Email is required." });
 
-    const user = await User.findOne({ email: email.toLowerCase() }).select("+password");
+    // Selecting password to check if this is a Google-only account
+    const user = await User.findOne({ email: email.toLowerCase() }).select(
+      "+password",
+    );
 
+    // Always return the same success message whether or not the account exists -
+    // prevents email enumeration attacks
     if (!user)
-      return res.status(200).json({ success: true, message: "If an account with that email exists, an OTP has been sent." });
+      return res.status(200).json({
+        success: true,
+        message: "If an account with that email exists, an OTP has been sent.",
+      });
 
     if (!user.password)
-      return res.status(400).json({ success: false, message: "This account uses Google Sign-In. Please log in with Google." });
+      return res.status(400).json({
+        success: false,
+        message: "This account uses Google Sign-In. Please log in with Google.",
+      });
 
     const otp = user.getOTP();
     await user.save({ validateBeforeSave: false });
@@ -280,12 +368,10 @@ const forgotPassword = async (req, res, next) => {
     const message = `
       <div style="font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; padding: 50px 20px;">
         <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0;">
-          
           <div style="background-color: #0f172a; padding: 30px 20px; text-align: center;">
             <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: 700; letter-spacing: 1px;">TrackWise</h1>
             <p style="color: #10b981; font-size: 11px; font-weight: 700; letter-spacing: 2px; margin: 5px 0 0 0; text-transform: uppercase;">Expense Tracker</p>
           </div>
-
           <div style="padding: 40px 30px; text-align: center;">
             <h2 style="color: #334155; font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 10px;">Password Reset Request</h2>
             <p style="color: #64748b; font-size: 16px; line-height: 1.5; margin-bottom: 30px;">
@@ -294,44 +380,51 @@ const forgotPassword = async (req, res, next) => {
             <div style="background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 28px 24px 20px 24px; margin-bottom: 30px;">
               <span style="font-size: 36px; font-weight: bold; color: #3b82f6; letter-spacing: 12px; font-family: monospace; display: inline-block; padding-left: 12px; line-height: 1; vertical-align: middle;">${otp}</span>
             </div>
-            <p style="color: #94a3b8; font-size: 14px; margin-bottom: 30px;">
-              This code is valid for <strong>15 minutes</strong>.
-            </p>
+            <p style="color: #94a3b8; font-size: 14px; margin-bottom: 30px;">This code is valid for <strong>15 minutes</strong>.</p>
             <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 0 0 20px 0;" />
-            <p style="color: #64748b; font-size: 12px; line-height: 1.5; margin: 0;">
-              If you didn't request this email, your account is safe and you can safely ignore it.
-            </p>
-            <p style="color: #64748b; font-size: 12px; margin-top: 8px;">
-              &copy; ${new Date().getFullYear()} TrackWise
-            </p>
+            <p style="color: #64748b; font-size: 12px; line-height: 1.5; margin: 0;">If you didn't request this email, your account is safe and you can safely ignore it.</p>
+            <p style="color: #64748b; font-size: 12px; margin-top: 8px;">&copy; ${new Date().getFullYear()} TrackWise</p>
           </div>
         </div>
       </div>
     `;
 
     try {
-      await sendEmail({ email: user.email, subject: "TrackWise - Password Reset Code", html: message });
-      return res.status(200).json({ success: true, message: "If an account with that email exists, an OTP has been sent." });
+      await sendEmail({
+        email: user.email,
+        subject: "TrackWise - Password Reset Code",
+        html: message,
+      });
+      return res.status(200).json({
+        success: true,
+        message: "If an account with that email exists, an OTP has been sent.",
+      });
     } catch (error) {
       user.otp = undefined;
       user.otpExpire = undefined;
       await user.save({ validateBeforeSave: false });
-      return res.status(500).json({ success: false, message: "Email could not be sent." });
+      return res
+        .status(500)
+        .json({ success: false, message: "Email could not be sent." });
     }
   } catch (error) {
     next(error);
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   PUT /api/auth/reset-password
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   PUT /api/auth/reset-password ------------------------------------
+// @desc    Validate the reset OTP and save the new password
+// @access  Public
+// Note: token is in the request body, not the URL - keeps it out of server logs
 const resetPassword = async (req, res, next) => {
   try {
     const { email, otp, newPassword } = req.body;
-    
+
     if (!newPassword || newPassword.length < 6)
-      return res.status(400).json({ success: false, message: "Password must be at least 6 characters." });
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters.",
+      });
 
     const hashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
 
@@ -342,8 +435,12 @@ const resetPassword = async (req, res, next) => {
     }).select("+password");
 
     if (!user)
-      return res.status(400).json({ success: false, message: "Reset code is invalid or has expired." });
+      return res.status(400).json({
+        success: false,
+        message: "Reset code is invalid or has expired.",
+      });
 
+    // Setting user.password here triggers the pre-save hash hook in User.js
     user.password = newPassword;
     user.otp = undefined;
     user.otpExpire = undefined;
@@ -355,24 +452,31 @@ const resetPassword = async (req, res, next) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   POST /api/auth/google-login
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   POST /api/auth/google-login ------------------------------------
+// @desc    Verify a Google ID token and log in or auto-register the user
+// @access  Public
 const googleLogin = async (req, res, next) => {
   try {
     const { token } = req.body;
     if (!token)
-      return res.status(400).json({ success: false, message: "Google credential token is required." });
+      return res.status(400).json({
+        success: false,
+        message: "Google credential token is required.",
+      });
 
     let payload;
     try {
+      // The Google library verifies the token signature and audience claim for us
       const ticket = await googleClient.verifyIdToken({
         idToken: token,
         audience: process.env.GOOGLE_CLIENT_ID,
       });
       payload = ticket.getPayload();
     } catch (verifyErr) {
-      return res.status(401).json({ success: false, message: "Invalid Google token. Please try again." });
+      return res.status(401).json({
+        success: false,
+        message: "Invalid Google token. Please try again.",
+      });
     }
 
     const { email, name, picture } = payload;
@@ -380,20 +484,23 @@ const googleLogin = async (req, res, next) => {
     let user = await User.findOne({ email: email.toLowerCase() });
 
     if (user) {
+      // Existing user - sync avatar URL if they didn't have one before
       if (picture && !user.avatarUrl) {
         user.avatarUrl = picture;
         await user.save({ validateBeforeSave: false });
       }
+      // Google verifies the email so mark them as verified if they somehow weren't
       if (!user.isVerified) {
         user.isVerified = true;
         await user.save({ validateBeforeSave: false });
       }
     } else {
+      // New user - create account without a password (Google-only auth)
       user = await User.create({
-        name: name,
+        name,
         email: email.toLowerCase(),
         avatarUrl: picture || null,
-        isVerified: true, // Google emails are pre-verified
+        isVerified: true, // Google already verified the email address
       });
     }
 
@@ -403,20 +510,21 @@ const googleLogin = async (req, res, next) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   GET /api/auth/me
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   GET /api/auth/me ------------------------------------------------
+// @desc    Return the currently logged-in user's profile
+// @access  Private
 const getMe = async (req, res, next) => {
   try {
+    // req.user is already attached by the protect middleware - no extra DB call needed
     res.status(200).json({ success: true, user: req.user });
   } catch (error) {
     next(error);
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   PUT /api/auth/budget
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   PUT /api/auth/budget -------------------------------------------
+// @desc    Update the user's overall monthly budget cap
+// @access  Private
 const updateBudget = async (req, res, next) => {
   try {
     const { monthlyBudget } = req.body;
@@ -447,19 +555,24 @@ const updateBudget = async (req, res, next) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   PUT /api/auth/profile
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   PUT /api/auth/profile ------------------------------------------
+// @desc    Update name, email, avatar colour, or monthly budget
+// @access  Private
 const updateProfile = async (req, res, next) => {
   try {
     const { name, email, avatarColor, monthlyBudget } = req.body;
 
+    // Check for email conflict before applying updates - don't want to
+    // accidentally collide with an existing account
     if (email && email.toLowerCase() !== req.user.email) {
       const existing = await User.findOne({ email: email.toLowerCase() });
       if (existing)
-        return res.status(409).json({ success: false, message: "That email is already in use." });
+        return res
+          .status(409)
+          .json({ success: false, message: "That email is already in use." });
     }
 
+    // Only include fields that were actually sent - avoids wiping out existing data
     const updates = {};
     if (name) updates.name = name.trim();
     if (email) updates.email = email.toLowerCase().trim();
@@ -488,58 +601,86 @@ const updateProfile = async (req, res, next) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   PUT /api/auth/password
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   PUT /api/auth/password -----------------------------------------
+// @desc    Change password - requires the current password to confirm
+// @access  Private
 const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
     if (!currentPassword || !newPassword)
-      return res.status(400).json({ success: false, message: "Both current and new password are required." });
+      return res.status(400).json({
+        success: false,
+        message: "Both current and new password are required.",
+      });
     if (newPassword.length < 6)
-      return res.status(400).json({ success: false, message: "New password must be at least 6 characters." });
+      return res.status(400).json({
+        success: false,
+        message: "New password must be at least 6 characters.",
+      });
     if (currentPassword === newPassword)
-      return res.status(400).json({ success: false, message: "New password must differ from current." });
+      return res.status(400).json({
+        success: false,
+        message: "New password must differ from current.",
+      });
 
+    // Need to explicitly select the password field since it's select:false in schema
     const user = await User.findById(req.user._id).select("+password");
 
+    // Google OAuth users don't have a password - can't do a password change
     if (!user.password)
-      return res.status(400).json({ success: false, message: "This account uses Google Sign-In and has no password." });
+      return res.status(400).json({
+        success: false,
+        message: "This account uses Google Sign-In and has no password.",
+      });
 
     if (!(await user.matchPassword(currentPassword)))
-      return res.status(401).json({ success: false, message: "Current password is incorrect." });
+      return res
+        .status(401)
+        .json({ success: false, message: "Current password is incorrect." });
 
     user.password = newPassword;
-    await user.save();
+    await user.save(); // pre-save hook will hash the new password
 
-    res.status(200).json({ success: true, message: "Password changed successfully." });
+    res
+      .status(200)
+      .json({ success: true, message: "Password changed successfully." });
   } catch (error) {
     next(error);
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// @route   DELETE /api/auth/account
-// ─────────────────────────────────────────────────────────────────────────────
+// --- @route   DELETE /api/auth/account ---------------------------------------
+// @desc    Permanently delete the user account and all associated data
+// @access  Private
 const deleteAccount = async (req, res, next) => {
   try {
     const { password } = req.body;
     const user = await User.findById(req.user._id).select("+password");
 
+    // Password-based accounts must confirm their password before deletion -
+    // Google OAuth accounts skip this check since there's no password to verify
     if (user.password) {
       if (!password)
-        return res.status(400).json({ success: false, message: "Password is required to delete your account." });
+        return res.status(400).json({
+          success: false,
+          message: "Password is required to delete your account.",
+        });
       if (!(await user.matchPassword(password)))
-        return res.status(401).json({ success: false, message: "Incorrect password." });
+        return res
+          .status(401)
+          .json({ success: false, message: "Incorrect password." });
     }
 
+    // Delete everything in parallel - no reason to wait for each one sequentially
     await Promise.all([
       Transaction.deleteMany({ user_id: req.user._id }),
       Budget.deleteMany({ user_id: req.user._id }),
       User.findByIdAndDelete(req.user._id),
     ]);
 
-    res.status(200).json({ success: true, message: "Account permanently deleted." });
+    res
+      .status(200)
+      .json({ success: true, message: "Account permanently deleted." });
   } catch (error) {
     next(error);
   }
@@ -548,7 +689,7 @@ const deleteAccount = async (req, res, next) => {
 module.exports = {
   register,
   verifyEmail,
-  resendOTP, 
+  resendOTP,
   login,
   forgotPassword,
   resetPassword,

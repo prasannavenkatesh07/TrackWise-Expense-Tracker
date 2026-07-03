@@ -1,68 +1,52 @@
 /**
  * controllers/budgetController.js
  *
- * Budget Controller — business logic for per-category budget limits.
+ * Handles all budget CRUD operations and the budget health summary.
  *
- * Routes handled:
- *   GET    /api/budgets              → getBudgets       (current month's budgets + spend)
- *   POST   /api/budgets              → createOrUpdate   (upsert a category budget)
- *   DELETE /api/budgets/:id          → deleteBudget
- *   GET    /api/budgets/summary      → getBudgetSummary (overall budget health stats)
+ * Routes:
+ *   GET    /api/budgets          → getBudgets          (list budgets + actual spend for a month)
+ *   POST   /api/budgets          → createOrUpdateBudget (create or update a category budget)
+ *   DELETE /api/budgets/:id      → deleteBudget
+ *   GET    /api/budgets/summary  → getBudgetSummary    (overall budget health stats)
  *
- * Design Decision — Upsert over separate Create/Update:
- *   Rather than a PUT /:id route that requires knowing the document _id,
- *   createOrUpdate uses MongoDB's { upsert: true } option keyed on
- *   (user_id, category, month, year). This means the frontend simply
- *   POSTs the desired limit and the backend handles create vs update
- *   transparently — simpler React state management.
- *
- * MERN Data Flow:
- *   BudgetsPage → axios.post('/api/budgets', { category, limit, month, year })
- *   → protect middleware (injects req.user)
- *   → createOrUpdate → Budget.findOneAndUpdate(..., { upsert: true })
- *   → returns enriched budget (with spent + percentage)
- *   → React state update → UI re-render (no page reload)
+ * Design note on createOrUpdateBudget:
+ *   Instead of having separate POST (create) and PUT/:id (update) routes, I'm using
+ *   MongoDB's findOneAndUpdate with upsert:true, keyed on (user_id, category, month, year).
+ *   This means the frontend just POSTs the desired limit and doesn't need to track
+ *   whether a budget already exists - much simpler React state management.
  */
 
 const { validationResult } = require("express-validator");
 const Budget = require("../models/Budget");
 const { TRANSACTION_CATEGORIES } = require("../models/Transaction");
 
-// ─── Helper: get current month + year ─────────────────────────────────────────
+// --- Helper -------------------------------------------------------------------
+// Pulled into a helper so I don't repeat new Date() math in every controller
 const getCurrentMonthYear = () => {
   const now = new Date();
   return { month: now.getMonth() + 1, year: now.getFullYear() };
 };
 
-// ─── @route   GET /api/budgets ────────────────────────────────────────────────
-// ─── @access  Private
-/**
- * Returns all budget entries for the requested month/year (defaults to current).
- * Each entry is enriched with actual `spent` and `percentage` via the
- * Budget.getBudgetsWithSpend() static aggregation method.
- *
- * Query params:
- *   ?month=5&year=2025  (optional — defaults to current month/year)
- */
+// --- @route   GET /api/budgets ------------------------------------------------
+// @desc    Get all budget entries for a given month with actual spend merged in
+// @access  Private
+// Query params: ?month=5&year=2025 (defaults to current month/year if not provided)
 const getBudgets = async (req, res, next) => {
   try {
     const { month, year } = getCurrentMonthYear();
     const targetMonth = parseInt(req.query.month) || month;
     const targetYear = parseInt(req.query.year) || year;
 
-    // Validate month/year ranges
-    if (targetMonth < 1 || targetMonth > 12) {
+    if (targetMonth < 1 || targetMonth > 12)
       return res
         .status(400)
         .json({ success: false, message: "Month must be between 1 and 12." });
-    }
-    if (targetYear < 2020) {
+    if (targetYear < 2020)
       return res
         .status(400)
         .json({ success: false, message: "Year must be 2020 or later." });
-    }
 
-    // Use the static method that merges budgets + spend in one aggregation
+    // The static method handles the aggregation join with Transaction - no N+1 here
     const budgets = await Budget.getBudgetsWithSpend(
       req.user._id,
       targetMonth,
@@ -81,15 +65,10 @@ const getBudgets = async (req, res, next) => {
   }
 };
 
-// ─── @route   POST /api/budgets ───────────────────────────────────────────────
-// ─── @access  Private
-/**
- * Create or update a budget entry for a specific category/month/year.
- * Uses MongoDB upsert — if a document matching (user_id, category, month, year)
- * exists it updates the limit; otherwise it creates a new document.
- *
- * Body: { category, limit, month?, year? }
- */
+// --- @route   POST /api/budgets -----------------------------------------------
+// @desc    Set a spending limit for a category. Creates it if new, updates if it exists.
+// @access  Private
+// Body: { category, limit, month?, year? }
 const createOrUpdateBudget = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -109,7 +88,9 @@ const createOrUpdateBudget = async (req, res, next) => {
       year: reqYear = year,
     } = req.body;
 
-    // Upsert: find by the unique composite key, update the limit field
+    // findOneAndUpdate with upsert - creates the document if it doesn't exist,
+    // updates the limit field if it does. The unique index on (user_id, category, month, year)
+    // in the Budget schema makes this safe.
     const budget = await Budget.findOneAndUpdate(
       {
         user_id: req.user._id,
@@ -119,9 +100,9 @@ const createOrUpdateBudget = async (req, res, next) => {
       },
       { limit: parseFloat(limit) },
       {
-        new: true, // Return the updated document
-        upsert: true, // Create if not found
-        runValidators: true, // Enforce schema validators on update
+        new: true, // return the updated/created document
+        upsert: true, // create if not found
+        runValidators: true, // still run schema validators on update
         setDefaultsOnInsert: true,
       },
     );
@@ -132,7 +113,8 @@ const createOrUpdateBudget = async (req, res, next) => {
       data: budget,
     });
   } catch (error) {
-    // Catch the duplicate key error from MongoDB (race condition edge case)
+    // MongoDB throws 11000 on duplicate key violations - can happen in a race
+    // condition if two requests arrive at exactly the same time
     if (error.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -143,11 +125,12 @@ const createOrUpdateBudget = async (req, res, next) => {
   }
 };
 
-// ─── @route   DELETE /api/budgets/:id ────────────────────────────────────────
-// ─── @access  Private
+// --- @route   DELETE /api/budgets/:id ----------------------------------------
+// @desc    Remove a budget entry by its MongoDB ObjectId
+// @access  Private
 const deleteBudget = async (req, res, next) => {
   try {
-    // Scope delete to the authenticated user — prevents cross-user deletion
+    // Scoping the delete by user_id so one user can't delete another's budget
     const budget = await Budget.findOneAndDelete({
       _id: req.params.id,
       user_id: req.user._id,
@@ -170,17 +153,10 @@ const deleteBudget = async (req, res, next) => {
   }
 };
 
-// ─── @route   GET /api/budgets/summary ───────────────────────────────────────
-// ─── @access  Private
-/**
- * Returns high-level budget health stats for the current month:
- *   - Total budget allocated (sum of all category limits)
- *   - Total actually spent against budgeted categories
- *   - Number of categories over budget
- *   - Number of categories under budget
- *
- * Used by the BudgetsPage header strip and the Reports page.
- */
+// --- @route   GET /api/budgets/summary ---------------------------------------
+// @desc    Get overall budget health stats for a given month
+// @access  Private
+// Returns totals, over/under counts, and a health percentage for the BudgetsPage header
 const getBudgetSummary = async (req, res, next) => {
   try {
     const { month, year } = getCurrentMonthYear();
@@ -196,7 +172,13 @@ const getBudgetSummary = async (req, res, next) => {
     const totalAllocated = budgets.reduce((s, b) => s + b.limit, 0);
     const totalSpent = budgets.reduce((s, b) => s + b.spent, 0);
     const overBudgetCount = budgets.filter((b) => b.isOverBudget).length;
-    const underBudget = budgets.length - overBudgetCount;
+    const underBudgetCount = budgets.length - overBudgetCount;
+
+    // Making sure to round to 1 decimal so the progress bar doesn't show ugly floats
+    const healthPercent =
+      totalAllocated > 0
+        ? parseFloat(((totalSpent / totalAllocated) * 100).toFixed(1))
+        : 0;
 
     res.status(200).json({
       success: true,
@@ -207,12 +189,9 @@ const getBudgetSummary = async (req, res, next) => {
         totalSpent,
         totalRemaining: totalAllocated - totalSpent,
         overBudgetCount,
-        underBudgetCount: underBudget,
+        underBudgetCount,
         budgetCount: budgets.length,
-        healthPercent:
-          totalAllocated > 0
-            ? parseFloat(((totalSpent / totalAllocated) * 100).toFixed(1))
-            : 0,
+        healthPercent,
       },
     });
   } catch (error) {

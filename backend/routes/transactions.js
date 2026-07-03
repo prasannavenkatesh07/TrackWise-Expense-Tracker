@@ -1,18 +1,17 @@
 /**
  * routes/transactions.js
  *
- * Transaction Routes — Extended in Phase A + AI Quick Add
- * Mounted at: /api/transactions  (see server.js)
+ * Transaction routes - all mounted at /api/transactions (see server.js).
+ * Every route requires a valid JWT via router.use(protect).
  *
- * ALL routes require JWT authentication via router.use(protect).
- *
- * ⚠️ Route ordering: named routes (/quick-add, /ai-report, /scan-receipt, /summary, /insights, /export, /titles, /monthly)
- *    MUST appear BEFORE /:id so Express doesn't interpret them as ObjectId params.
+ * Route ordering matters here: named routes like /quick-add, /summary,
+ * /export etc. MUST be declared before /:id - otherwise Express sees
+ * "summary" as an ObjectId param and throws a CastError.
  */
 
 const express = require("express");
 const { body } = require("express-validator");
-const multer  = require("multer");
+const multer = require("multer");
 
 const {
   getAllTransactions,
@@ -37,10 +36,12 @@ const {
 
 const router = express.Router();
 
-// Apply JWT protect to ALL routes in this router
+// Protect every route in this file
 router.use(protect);
 
-// ─── Shared validation (all fields optional — used by PUT) ────────────────────
+// --- Shared Field Validation --------------------------------------------------
+// All fields are optional here so this can be reused for PUT (partial updates).
+// The createRequiredValidation array below adds the required checks for POST.
 const coreTransactionValidation = [
   body("title")
     .optional()
@@ -86,7 +87,7 @@ const coreTransactionValidation = [
     ),
 ];
 
-// Extra required validators for POST only
+// These make title/amount/type/category required - only used on POST
 const createRequiredValidation = [
   body("title").notEmpty().withMessage("Transaction title is required."),
   body("amount").notEmpty().withMessage("Amount is required."),
@@ -94,7 +95,7 @@ const createRequiredValidation = [
   body("category").notEmpty().withMessage("Category is required."),
 ];
 
-// Validation for AI Quick Add — text field only, enums are enforced by the controller
+// Just validates the text field - the AI controller handles parsing the rest
 const quickAddValidation = [
   body("text")
     .trim()
@@ -106,14 +107,14 @@ const quickAddValidation = [
     .withMessage("Input cannot exceed 500 characters."),
 ];
 
-// ─── Multer — memory storage for receipt image uploads ───────────────────────────
-// Files are held in RAM as Buffer objects (req.file.buffer) and passed directly
-// to Gemini as base64 inlineData — no disk I/O, no temp file cleanup needed.
-// Accepted MIME types are validated here so invalid uploads are rejected before
-// reaching the controller.
+// --- Multer Setup (Receipt Image Uploads) -------------------------------------
+// Storing files in memory as Buffers instead of writing to disk -
+// they get converted to base64 and sent straight to Gemini Vision.
+// This means no temp files to clean up, which keeps things simple.
+// TODO: add a check for corrupted image buffers before sending to Gemini
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB hard ceiling
+  limits: { fileSize: 5 * 1024 * 1024 }, // hard cap at 5 MB
   fileFilter: (_req, file, cb) => {
     const ACCEPTED = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
     if (ACCEPTED.includes(file.mimetype)) {
@@ -128,30 +129,74 @@ const upload = multer({
   },
 });
 
-// ─── Named routes (before /:id) ────────────────────────────────────────────────
-router.post("/quick-add", quickAddValidation, parseQuickAdd); // AI Quick Add — Gemini NLP
-router.get("/ai-report", generateAIReport);                   // Sprint 2 — Gemini monthly report
-router.post(                                                  // Sprint 3 — Gemini vision OCR
-  "/scan-receipt",
-  upload.single("receiptImage"),
-  parseReceiptImage,
-);
-router.get("/summary", getSummary);
-router.get("/insights", getInsights);
-router.get("/export", exportCSV);
-router.get("/titles", getTitleSuggestions); // Phase A — autocomplete
-router.get("/monthly", getMonthlyTrend); // Phase A — reports chart data
+// --- Named Routes (must come before /:id) ------------------------------------
 
-// ─── Collection routes ─────────────────────────────────────────────────────────
+// @route   POST /api/transactions/quick-add
+// @desc    Parse a natural language string into a transaction using Gemini
+// @access  Private
+router.post("/quick-add", quickAddValidation, parseQuickAdd);
+
+// @route   GET /api/transactions/ai-report
+// @desc    Generate a Gemini-powered monthly spending analysis report
+// @access  Private
+router.get("/ai-report", generateAIReport);
+
+// @route   POST /api/transactions/scan-receipt
+// @desc    Upload a receipt image and extract transaction data via Gemini Vision
+// @access  Private
+router.post("/scan-receipt", upload.single("receiptImage"), parseReceiptImage);
+
+// @route   GET /api/transactions/summary
+// @desc    Get total income, expenses, and balance (supports ?from=&to= filters)
+// @access  Private
+router.get("/summary", getSummary);
+
+// @route   GET /api/transactions/insights
+// @desc    Get category-level expense breakdown for charts
+// @access  Private
+router.get("/insights", getInsights);
+
+// @route   GET /api/transactions/export
+// @desc    Download all transactions as a CSV file
+// @access  Private
+router.get("/export", exportCSV);
+
+// @route   GET /api/transactions/titles
+// @desc    Autocomplete - returns matching transaction titles for a search query
+// @access  Private
+router.get("/titles", getTitleSuggestions);
+
+// @route   GET /api/transactions/monthly
+// @desc    Get income vs expense totals grouped by month for the reports chart
+// @access  Private
+router.get("/monthly", getMonthlyTrend);
+
+// --- Collection Routes --------------------------------------------------------
+
+// @route   GET /api/transactions
+// @desc    Get all transactions for the logged-in user (supports filters + pagination)
+// @access  Private
 router.get("/", getAllTransactions);
+
+// @route   POST /api/transactions
+// @desc    Create a new transaction
+// @access  Private
 router.post(
   "/",
   [...createRequiredValidation, ...coreTransactionValidation],
   createTransaction,
 );
 
-// ─── Resource routes (after named routes) ─────────────────────────────────────
-router.put("/:id", coreTransactionValidation, editTransaction); // Phase A
+// --- Resource Routes (after named routes) -------------------------------------
+
+// @route   PUT /api/transactions/:id
+// @desc    Edit an existing transaction by ID
+// @access  Private
+router.put("/:id", coreTransactionValidation, editTransaction);
+
+// @route   DELETE /api/transactions/:id
+// @desc    Delete a transaction by ID
+// @access  Private
 router.delete("/:id", deleteTransaction);
 
 module.exports = router;

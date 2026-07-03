@@ -1,110 +1,120 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  // ── Dark Mode Strategy ──────────────────────────────────────────────────────
-  // "class" strategy: dark mode is toggled by adding/removing the `dark` class
-  // on the <html> element — giving us full programmatic control via the
-  // ThemeToggle button in the Navbar. Tailwind then activates all `dark:` prefixed
-  // utility classes automatically.
-  darkMode: 'class',
+  // --- Dark mode strategy --------------------------------------------------
+  // 'class' means Tailwind activates dark: variants when a `dark` class
+  // is present on <html>. ThemeContext.jsx adds/removes that class whenever
+  // the user clicks the toggle in the Navbar.
+  // The alternative ('media') would just follow the OS setting with no toggle -
+  // that doesn't work for a product where users should be able to pick.
+  darkMode: "class",
 
-  // ── Content Paths ───────────────────────────────────────────────────────────
-  // Tailwind scans these files to tree-shake unused utility classes in production.
-  content: [
-    './index.html',
-    './src/**/*.{js,ts,jsx,tsx}',
-  ],
+  // --- Content paths -------------------------------------------------------
+  // Tailwind scans these files at build time to tree-shake any utility class
+  // that isn't actually used - keeps the production CSS bundle small
+  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
 
   theme: {
     extend: {
-      // ── Custom Font Family ────────────────────────────────────────────────
-      // "Sora" — a geometric, modern sans-serif perfect for FinTech dashboards.
-      // Sharp, confident, and highly legible at both display and body sizes.
-      // Loaded via Google Fonts in index.html.
+      // --- Custom fonts ---------------------------------------------------
+      // Sora: geometric sans-serif - confident, modern, works well at both
+      //       display sizes (stat cards) and body sizes (table rows)
+      // JetBrains Mono: for currency amounts and numeric columns -
+      //       tabular-nums keeps digits the same width so they line up in tables
+      // Both are loaded via Google Fonts in index.html
       fontFamily: {
-        sans: ['Sora', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+        sans: ["Sora", "ui-sans-serif", "system-ui", "sans-serif"],
+        mono: ["JetBrains Mono", "ui-monospace", "monospace"],
       },
 
-      // ── Extended Color Palette ────────────────────────────────────────────
-      // Custom tokens that extend Tailwind's default palette.
-      // These map directly to the design system in the blueprint.
+      // --- Extended colour palette ----------------------------------------
+      // These extend (not replace) Tailwind's default palette
       colors: {
-        // Brand navy — richer than default slate-900 for the navbar/sidebar
+        // Deep navy for the navbar - richer than default slate-900
         navy: {
-          DEFAULT: '#0f172a',
-          light: '#1e293b',
-          subtle: '#334155',
+          DEFAULT: "#0f172a",
+          light: "#1e293b",
+          subtle: "#334155",
         },
-        // Accent — vibrant teal-emerald that pops against navy
+        // Emerald accent - the main brand colour used on buttons, badges, charts
         accent: {
-          DEFAULT: '#10b981',  // emerald-500 equivalent
-          light: '#d1fae5',    // emerald-100
-          dark: '#059669',     // emerald-600
+          DEFAULT: "#10b981", // emerald-500
+          light: "#d1fae5", // emerald-100
+          dark: "#059669", // emerald-600
         },
-        // Soft canvas background for the main area
+        // Page background tokens - used in the CSS variables in index.css
         canvas: {
-          light: '#f8fafc',    // slate-50
-          dark: '#0f172a',     // slate-900
+          light: "#f8fafc", // slate-50
+          dark: "#0f172a", // slate-900
         },
       },
 
-      // ── Box Shadows ───────────────────────────────────────────────────────
-      // Layered shadows for cards — subtle depth without harshness
+      // --- Shadows --------------------------------------------------------
+      // Layered shadows give cards depth without looking harsh -
+      // the two-layer approach (tight + diffuse) mimics how real shadows work
       boxShadow: {
-        'card': '0 1px 3px 0 rgb(0 0 0 / 0.06), 0 4px 16px -2px rgb(0 0 0 / 0.08)',
-        'card-hover': '0 4px 6px -1px rgb(0 0 0 / 0.08), 0 12px 32px -4px rgb(0 0 0 / 0.12)',
-        'glow-emerald': '0 0 24px -4px rgb(16 185 129 / 0.35)',
+        card: "0 1px 3px 0 rgb(0 0 0 / 0.06), 0 4px 16px -2px rgb(0 0 0 / 0.08)",
+        "card-hover":
+          "0 4px 6px -1px rgb(0 0 0 / 0.08), 0 12px 32px -4px rgb(0 0 0 / 0.12)",
+        "glow-emerald": "0 0 24px -4px rgb(16 185 129 / 0.35)", // for the logo mark in Navbar
       },
 
-      // ── Border Radius ─────────────────────────────────────────────────────
+      // --- Border radius ---------------------------------------------------
+      // Larger radius values for the card and button shapes - default xl (0.75rem)
+      // felt too sharp for the soft FinTech aesthetic
       borderRadius: {
-        'xl': '1rem',
-        '2xl': '1.25rem',
-        '3xl': '1.5rem',
+        xl: "1rem",
+        "2xl": "1.25rem",
+        "3xl": "1.5rem",
       },
 
-      // ── Keyframe Animations ───────────────────────────────────────────────
-      // Custom animations for the budget progress bar and alert banners
+      // --- Keyframes ------------------------------------------------------
       keyframes: {
-        'slide-down': {
-          '0%': { opacity: '0', transform: 'translateY(-8px)' },
-          '100%': { opacity: '1', transform: 'translateY(0)' },
+        // Used by alert banners and dropdown menus
+        "slide-down": {
+          "0%": { opacity: "0", transform: "translateY(-8px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
         },
-        'fade-in': {
-          '0%': { opacity: '0' },
-          '100%': { opacity: '1' },
+        // Page route transitions
+        "fade-in": {
+          "0%": { opacity: "0" },
+          "100%": { opacity: "1" },
         },
-        'progress-fill': {
-          '0%': { width: '0%' },
-          '100%': { width: 'var(--progress-width)' },
+        // Budget progress bar fill - reads --progress-width CSS variable
+        // because Tailwind JIT can't generate dynamic arbitrary widths at runtime
+        "progress-fill": {
+          "0%": { width: "0%" },
+          "100%": { width: "var(--progress-width)" },
         },
-        'pulse-soft': {
-          '0%, 100%': { opacity: '1' },
-          '50%': { opacity: '0.7' },
+        // Gentle pulse for loading text and status indicators
+        "pulse-soft": {
+          "0%, 100%": { opacity: "1" },
+          "50%": { opacity: "0.7" },
         },
-        'shimmer': {
-          '0%': { backgroundPosition: '-200% 0' },
-          '100%': { backgroundPosition: '200% 0' },
+        // Skeleton loading shimmer sweep
+        shimmer: {
+          "0%": { backgroundPosition: "-200% 0" },
+          "100%": { backgroundPosition: "200% 0" },
         },
       },
 
       animation: {
-        'slide-down': 'slide-down 0.25s ease-out',
-        'fade-in': 'fade-in 0.3s ease-out',
-        'progress-fill': 'progress-fill 0.6s ease-out forwards',
-        'pulse-soft': 'pulse-soft 2s ease-in-out infinite',
-        'shimmer': 'shimmer 1.8s linear infinite',
+        "slide-down": "slide-down 0.25s ease-out",
+        "fade-in": "fade-in 0.3s ease-out",
+        "progress-fill": "progress-fill 0.6s ease-out forwards",
+        "pulse-soft": "pulse-soft 2s ease-in-out infinite",
+        shimmer: "shimmer 1.8s linear infinite",
       },
 
-      // ── Transition Timing ─────────────────────────────────────────────────
+      // --- Misc ------------------------------------------------------------
       transitionDuration: {
-        '400': '400ms',
+        400: "400ms",
       },
 
-      // ── Custom Spacing ────────────────────────────────────────────────────
+      // TODO: clean up spacing tokens - 18 and 88 were added early on
+      // and I'm not sure they're still used anywhere
       spacing: {
-        '18': '4.5rem',
-        '88': '22rem',
+        18: "4.5rem",
+        88: "22rem",
       },
     },
   },

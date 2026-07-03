@@ -1,60 +1,46 @@
 /**
  * components/Onboarding.jsx
  *
- * 3-Step Onboarding Wizard Modal
+ * 3-step onboarding wizard shown automatically to new users on their first login.
+ * Once completed or skipped, it sets a localStorage flag and never shows again.
  *
- * Shown automatically to new users on their first login.
- * Persisted with a localStorage flag `trackwise_onboarded` — once dismissed
- * or completed, it never shows again.
+ * Step flow:
+ *   Step 1 - Welcome + set monthly budget  → PUT /api/auth/budget
+ *   Step 2 - Add first income transaction  → POST /api/transactions
+ *   Step 3 - Add first expense + celebration screen → POST /api/transactions
  *
- * Step Flow:
- *   Step 1 — Welcome + Set Monthly Budget goal
- *   Step 2 — Add First Income transaction (e.g., salary)
- *   Step 3 — Add First Expense transaction + completion celebration
+ * The modal is rendered via createPortal so it escapes any overflow:hidden parent -
+ * important since it needs to cover the entire viewport.
  *
- * Architecture:
- *   - Modal overlay rendered via React.createPortal to <body>
- *   - Each step is a self-contained sub-component
- *   - The wizard is skippable at any step via the "Skip setup" link
- *   - On completion/skip: sets localStorage flag → parent unmounts it
- *
- * Integration (App.jsx / DashboardPage.jsx):
+ * Usage in DashboardPage:
  *   import { useOnboarding } from '../components/Onboarding';
- *   const { OnboardingModal } = useOnboarding();
- *   // In JSX:
- *   <OnboardingModal onComplete={handleOnboardingDone} />
+ *   const { shouldShow, markComplete, OnboardingModal } = useOnboarding();
+ *   // in JSX:
+ *   {shouldShow && <OnboardingModal onComplete={markComplete} />}
  *
- * MERN Data Flow:
- *   Step 1 → PUT /api/auth/budget  (updates monthlyBudget in MongoDB)
- *   Step 2 → POST /api/transactions (creates Income transaction)
- *   Step 3 → POST /api/transactions (creates Expense transaction)
- *   → On completion: AuthContext.updateUser() patches local budget state
- *   → DashboardPage refreshKey++ to re-fetch summary
+ * Data flow:
+ *   Step 1 → PUT /api/auth/budget  → updateUser() patches AuthContext
+ *   Step 2 → POST /api/transactions (Income)
+ *   Step 3 → POST /api/transactions (Expense)
+ *   → On completion: parent calls refreshKey++ to reload the dashboard
  */
 
 import { useState, useEffect } from 'react';
-import { createPortal } from 'react-dom';
-import axios from 'axios';
+import { createPortal }        from 'react-dom';
+import axios                   from 'axios';
 import {
-  Wallet,
-  TrendingUp,
-  TrendingDown,
-  ArrowRight,
-  ArrowLeft,
-  CheckCircle2,
-  X,
-  Loader2,
-  Target,
-  Sparkles,
-  IndianRupee,
+  Wallet, TrendingUp, TrendingDown,
+  ArrowRight, ArrowLeft, CheckCircle2,
+  X, Loader2, Target, Sparkles, IndianRupee,
 } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth }  from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 
-// ── localStorage key ───────────────────────────────────────────────────────────
+// localStorage key - checked on every login to decide whether to show the wizard
 const ONBOARDING_KEY = 'trackwise_onboarded';
 
-// ── Step progress dots ─────────────────────────────────────────────────────────
+// --- Step progress dots -------------------------------------------------------
+// Active step gets a wider pill shape; past steps get a filled dot; future = empty
 const StepDots = ({ current, total }) => (
   <div className="flex items-center justify-center gap-2" aria-label={`Step ${current + 1} of ${total}`}>
     {Array.from({ length: total }).map((_, i) => (
@@ -62,11 +48,9 @@ const StepDots = ({ current, total }) => (
         key={i}
         className={[
           'rounded-full transition-all duration-300',
-          i === current
-            ? 'w-6 h-2 bg-emerald-500'
-            : i < current
-            ? 'w-2 h-2 bg-emerald-300 dark:bg-emerald-700'
-            : 'w-2 h-2 bg-slate-200 dark:bg-slate-600',
+          i === current  ? 'w-6 h-2 bg-emerald-500'                    // active - pill
+          : i < current  ? 'w-2 h-2 bg-emerald-300 dark:bg-emerald-700' // done - filled
+          :                'w-2 h-2 bg-slate-200 dark:bg-slate-600',     // upcoming - empty
         ].join(' ')}
         aria-hidden="true"
       />
@@ -74,12 +58,12 @@ const StepDots = ({ current, total }) => (
   </div>
 );
 
-// ── Step 1: Welcome + Budget ───────────────────────────────────────────────────
+// --- Step 1: Welcome + Budget -------------------------------------------------
 const StepWelcome = ({ onNext, isLoading }) => {
   const { user, updateUser } = useAuth();
   const { toast } = useToast();
   const [budget, setBudget] = useState(user?.monthlyBudget?.toString() || '50000');
-  const [error, setError] = useState('');
+  const [error,  setError]  = useState('');
 
   const handleNext = async () => {
     const val = Number(budget);
@@ -92,7 +76,8 @@ const StepWelcome = ({ onNext, isLoading }) => {
     try {
       const { data } = await axios.put('/api/auth/budget', { monthlyBudget: val });
       if (data.success) {
-        // Patch local AuthContext so the Navbar shows the updated budget
+        // Patch AuthContext immediately so the Navbar shows the new budget
+        // without needing a full page reload
         updateUser({ monthlyBudget: val });
         toast.success(`Monthly budget set to ₹${val.toLocaleString('en-IN')}!`);
         onNext();
@@ -104,7 +89,6 @@ const StepWelcome = ({ onNext, isLoading }) => {
 
   return (
     <div className="space-y-6">
-      {/* Icon + heading */}
       <div className="text-center space-y-3">
         <div className="w-16 h-16 rounded-2xl bg-emerald-500 flex items-center justify-center mx-auto shadow-glow-emerald">
           <Wallet size={30} className="text-white" />
@@ -113,11 +97,10 @@ const StepWelcome = ({ onNext, isLoading }) => {
           Welcome to TrackWise, {user?.name?.split(' ')[0]}! 🎉
         </h2>
         <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed max-w-sm mx-auto">
-          Let's get your finances set up in 3 quick steps. First — what's your monthly spending goal?
+          Let's get your finances set up in 3 quick steps. First - what's your monthly spending goal?
         </p>
       </div>
 
-      {/* Budget input */}
       <div className="space-y-2">
         <label htmlFor="ob-budget" className="form-label">
           <span className="flex items-center gap-1.5">
@@ -141,27 +124,29 @@ const StepWelcome = ({ onNext, isLoading }) => {
             className={`input-field pl-10 font-numeric text-lg ${error ? 'border-rose-400 focus:ring-rose-400' : ''}`}
           />
         </div>
-        {error && (
-          <p className="text-xs text-rose-500 font-medium" role="alert">{error}</p>
-        )}
+        {error && <p className="text-xs text-rose-500 font-medium" role="alert">{error}</p>}
         <p className="text-xs text-slate-400 dark:text-slate-500">
           This drives the budget progress bar on your dashboard. You can change it anytime in Settings.
         </p>
       </div>
 
       <button onClick={handleNext} disabled={isLoading} className="btn-primary w-full py-3">
-        {isLoading ? <Loader2 size={16} className="animate-spin" /> : <><ArrowRight size={16} />Set my budget</>}
+        {isLoading
+          ? <Loader2 size={16} className="animate-spin" />
+          : <><ArrowRight size={16} />Set my budget</>
+        }
       </button>
     </div>
   );
 };
 
-// ── Step 2: First Income ───────────────────────────────────────────────────────
+// --- Step 2: First Income -----------------------------------------------------
 const StepIncome = ({ onNext, onBack, isLoading }) => {
   const { toast } = useToast();
-  const [form, setForm] = useState({ title: 'Monthly Salary', amount: '', category: 'Salary' });
+  const [form,  setForm]  = useState({ title: 'Monthly Salary', amount: '', category: 'Salary' });
   const [error, setError] = useState('');
 
+  // Only showing income-relevant categories here - no point listing Housing etc.
   const INCOME_CATEGORIES = ['Salary', 'Housing', 'Other'];
 
   const handleNext = async () => {
@@ -251,19 +236,23 @@ const StepIncome = ({ onNext, onBack, isLoading }) => {
           <ArrowLeft size={15} />
         </button>
         <button onClick={handleNext} disabled={isLoading} className="btn-primary flex-1">
-          {isLoading ? <Loader2 size={16} className="animate-spin" /> : <><ArrowRight size={16} />Add income</>}
+          {isLoading
+            ? <Loader2 size={16} className="animate-spin" />
+            : <><ArrowRight size={16} />Add income</>
+          }
         </button>
       </div>
     </div>
   );
 };
 
-// ── Step 3: First Expense + Celebration ───────────────────────────────────────
+// --- Step 3: First Expense + Celebration screen -------------------------------
 const StepExpense = ({ onComplete, onBack, isLoading }) => {
   const { toast } = useToast();
-  const [form, setForm] = useState({ title: '', amount: '', category: 'Food & Groceries' });
+  const [form,  setForm]  = useState({ title: '', amount: '', category: 'Food & Groceries' });
   const [error, setError] = useState('');
-  const [done, setDone] = useState(false);
+  // Once the expense is saved, flip this to show the celebration screen
+  const [done,  setDone]  = useState(false);
 
   const EXPENSE_CATEGORIES = [
     'Housing', 'Food & Groceries', 'Transport',
@@ -296,7 +285,7 @@ const StepExpense = ({ onComplete, onBack, isLoading }) => {
     }
   };
 
-  // Celebration screen shown after both transactions are saved
+  // Celebration screen - shown after both transactions are saved
   if (done) {
     return (
       <div className="text-center space-y-6 py-4">
@@ -311,6 +300,7 @@ const StepExpense = ({ onComplete, onBack, isLoading }) => {
             Your dashboard is loaded with your first transactions. Explore your spending insights and keep tracking!
           </p>
         </div>
+        {/* Quick feature highlights so the user knows what's waiting for them */}
         <div className="grid grid-cols-3 gap-3 text-xs text-slate-500 dark:text-slate-400">
           {['📊 Smart Insights', '🎤 Voice Entry', '📥 CSV Export'].map(f => (
             <div key={f} className="bg-slate-50 dark:bg-slate-700/50 rounded-xl p-3 font-medium">{f}</div>
@@ -334,7 +324,7 @@ const StepExpense = ({ onComplete, onBack, isLoading }) => {
           Log your first expense
         </h2>
         <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed max-w-sm mx-auto">
-          Almost done! Add any recent expense — groceries, rent, transport — whatever comes to mind.
+          Almost done! Add any recent expense - groceries, rent, transport - whatever comes to mind.
         </p>
       </div>
 
@@ -385,21 +375,27 @@ const StepExpense = ({ onComplete, onBack, isLoading }) => {
           <ArrowLeft size={15} />
         </button>
         <button onClick={handleFinish} disabled={isLoading} className="btn-primary flex-1">
-          {isLoading ? <Loader2 size={16} className="animate-spin" /> : <><CheckCircle2 size={16} />Finish setup</>}
+          {isLoading
+            ? <Loader2 size={16} className="animate-spin" />
+            : <><CheckCircle2 size={16} />Finish setup</>
+          }
         </button>
       </div>
     </div>
   );
 };
 
-// ── Onboarding Modal Shell ─────────────────────────────────────────────────────
+// --- Onboarding Modal Shell ---------------------------------------------------
 /**
- * The outer modal with backdrop, step dots, and skip link.
- * Rendered via createPortal to escape any overflow:hidden ancestor.
+ * Outer modal: backdrop, card, step dots, skip link.
+ * createPortal is used to mount directly to <body> so the modal always
+ * covers the full viewport regardless of any overflow:hidden ancestors.
  */
 const OnboardingModal = ({ onComplete }) => {
-  const [step, setStep]       = useState(0);
-  const [isLoading]           = useState(false);  // Reserved for future global loading state
+  const [step]      = useState(0);
+  // TODO: wire this up if we add any global loading state across steps
+  const [isLoading] = useState(false);
+  const [currentStep, setCurrentStep] = useState(0);
 
   const TOTAL_STEPS = 3;
 
@@ -414,20 +410,19 @@ const OnboardingModal = ({ onComplete }) => {
   };
 
   const steps = [
-    <StepWelcome key={0} onNext={() => setStep(1)} isLoading={isLoading} />,
-    <StepIncome  key={1} onNext={() => setStep(2)} onBack={() => setStep(0)} isLoading={isLoading} />,
-    <StepExpense key={2} onComplete={handleComplete} onBack={() => setStep(1)} isLoading={isLoading} />,
+    <StepWelcome key={0} onNext={() => setCurrentStep(1)} isLoading={isLoading} />,
+    <StepIncome  key={1} onNext={() => setCurrentStep(2)} onBack={() => setCurrentStep(0)} isLoading={isLoading} />,
+    <StepExpense key={2} onComplete={handleComplete}      onBack={() => setCurrentStep(1)} isLoading={isLoading} />,
   ];
 
   return createPortal(
-    // Full-screen backdrop
     <div
       className="fixed inset-0 z-[10000] flex items-center justify-center p-4"
       aria-modal="true"
       role="dialog"
       aria-label="Onboarding wizard"
     >
-      {/* Dark overlay */}
+      {/* Dark backdrop */}
       <div
         className="absolute inset-0 bg-slate-900/60 dark:bg-slate-950/70 backdrop-blur-sm"
         aria-hidden="true"
@@ -436,10 +431,10 @@ const OnboardingModal = ({ onComplete }) => {
       {/* Modal card */}
       <div className="relative w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-slide-down">
 
-        {/* Top accent bar */}
+        {/* Thin emerald accent bar at the top */}
         <div className="h-1 bg-gradient-to-r from-emerald-400 via-emerald-500 to-teal-400" aria-hidden="true" />
 
-        {/* Skip button — top right */}
+        {/* Skip button - shown throughout so the user never feels trapped */}
         <button
           onClick={handleSkip}
           className="absolute top-4 right-4 btn-ghost p-1.5 text-slate-400"
@@ -449,20 +444,19 @@ const OnboardingModal = ({ onComplete }) => {
           <X size={16} />
         </button>
 
-        {/* Modal content */}
         <div className="px-6 pt-6 pb-3">
-          {steps[step]}
+          {steps[currentStep]}
         </div>
 
-        {/* Footer: step dots + skip text link */}
         <div className="px-6 pt-3 pb-5 flex flex-col items-center gap-3">
-          <StepDots current={step} total={TOTAL_STEPS} />
-          {step < 2 && (
+          <StepDots current={currentStep} total={TOTAL_STEPS} />
+          {/* Hide the skip text link on the last step since it has its own completion button */}
+          {currentStep < 2 && (
             <button
               onClick={handleSkip}
               className="text-xs text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-400 transition-colors"
             >
-              Skip setup — I'll explore on my own
+              Skip setup - I'll explore on my own
             </button>
           )}
         </div>
@@ -472,18 +466,15 @@ const OnboardingModal = ({ onComplete }) => {
   );
 };
 
-// ── useOnboarding Hook ─────────────────────────────────────────────────────────
+// --- useOnboarding Hook -------------------------------------------------------
 /**
- * Encapsulates the logic for deciding whether to show the wizard.
- *
- * Returns:
- *   shouldShow {boolean}   — True if the wizard should be displayed
- *   markComplete {function} — Call to permanently dismiss the wizard
+ * Decides whether to show the wizard based on the localStorage flag.
+ * Returns shouldShow, markComplete, and the OnboardingModal component.
  *
  * Logic:
- *   - Read `trackwise_onboarded` from localStorage
- *   - If missing AND user exists (i.e., just registered), show the wizard
- *   - After completion/skip, write the flag to prevent future shows
+ *   - Read 'trackwise_onboarded' from localStorage on every login
+ *   - If it's missing AND we have a logged-in user → show the wizard
+ *   - After completion or skip → write the flag so it never shows again
  */
 export const useOnboarding = () => {
   const { user } = useAuth();

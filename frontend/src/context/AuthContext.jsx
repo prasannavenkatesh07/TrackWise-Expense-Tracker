@@ -1,54 +1,46 @@
 /**
  * context/AuthContext.jsx
  *
- * Global Authentication Context
+ * Global auth state for the entire app.
  *
- * Provides the entire React tree with:
- * - `user`         — The currently logged-in user object (or null)
- * - `token`        — The JWT string (or null)
- * - `isLoading`    — True while we're verifying a stored token on app load
- * - `login()`      — Called after a successful /api/auth/login response
- * - `logout()`     — Clears auth state and navigates to /login
- * - `updateUser()` — Patches local user state (e.g., after budget update)
- * - `loginWithGoogle()` — Handles Google OAuth token verification and login
+ * Exposes via useAuth():
+ *   user            - logged-in user object (or null)
+ *   token           - the raw JWT string (or null)
+ *   isLoading       - true while we're verifying a stored token on page load
+ *   isAuthenticated - shorthand boolean derived from !!user
+ *   login()         - called after a successful /api/auth/login response
+ *   loginWithGoogle() - handles Google OAuth ID token → our own JWT
+ *   logout()        - wipes auth state
+ *   updateUser()    - patches local user state without a round trip to /me
  *
- * MERN Data Flow:
- * 1. User logs in → AuthContext.login() stores JWT in localStorage.
- * 2. axios default header is set: Authorization: Bearer <token>
- * 3. All subsequent Axios calls automatically include the token.
- * 4. Express protect middleware reads the header and injects req.user.
- * 5. On page refresh, AuthContext reads the token from localStorage
- * and calls GET /api/auth/me to re-validate the session.
+ * Session persistence:
+ *   The JWT is stored in localStorage under 'expenseToken'.
+ *   On every page load, AuthContext reads it and calls GET /api/auth/me
+ *   to confirm the token is still valid before letting the user through.
+ *   If the request fails (expired/tampered token), everything is cleared.
+ *
+ * Axios integration:
+ *   Setting axios.defaults.headers.common['Authorization'] here means
+ *   every future axios call automatically includes the Bearer token -
+ *   no manual headers needed in any component or controller.
  */
 
 import { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 
-// ── Create context ─────────────────────────────────────────────────────────────
 const AuthContext = createContext(null);
 
-// ── Axios Base URL ────────────────────────────────────────────────────────────
-// With Vite's proxy configured, '/api' is all we need in development.
-// In production, set VITE_API_BASE_URL in the environment.
+// In production VITE_API_BASE_URL points to the deployed backend.
+// In development, leaving it blank lets Vite's proxy handle /api/* → localhost:5000.
 axios.defaults.baseURL = import.meta.env.VITE_API_BASE_URL || '';
 
-// ── Provider Component ─────────────────────────────────────────────────────────
 export const AuthProvider = ({ children }) => {
-  // State: current user profile object
-  const [user, setUser] = useState(null);
+  const [user,      setUser]      = useState(null);
+  const [token,     setToken]     = useState(() => localStorage.getItem('expenseToken') || null);
+  const [isLoading, setIsLoading] = useState(true); // true until the /me check completes
 
-  // State: raw JWT string — stored here AND in localStorage for persistence
-  const [token, setToken] = useState(() => localStorage.getItem('expenseToken') || null);
-
-  // State: true during the initial session-restoration check on mount
-  const [isLoading, setIsLoading] = useState(true);
-
-  // ── Set / Clear Axios Authorization Header ──────────────────────────────────
-  /**
-   * Whenever the token changes (login, logout, page refresh), sync it
-   * as the default Axios Authorization header so every future API call
-   * is automatically authenticated without manually passing headers.
-   */
+  // --- Sync the axios header whenever the token changes ----------------------
+  // This covers login, logout, and the initial restore-from-localStorage case
   const setAxiosAuthHeader = (jwt) => {
     if (jwt) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${jwt}`;
@@ -57,39 +49,31 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // ── On Mount: Restore Session ────────────────────────────────────────────────
-  /**
-   * When the app loads (or the user refreshes the page), check if a valid
-   * JWT exists in localStorage. If so, validate it against the backend by
-   * calling GET /api/auth/me. This prevents stale/expired tokens from being
-   * silently accepted.
-   */
+  // --- On mount: restore session from localStorage ---------------------------
+  // Can't just trust whatever's in localStorage - the token might be expired.
+  // Hitting /api/auth/me confirms the backend still accepts it.
   useEffect(() => {
     const restoreSession = async () => {
       const storedToken = localStorage.getItem('expenseToken');
 
       if (!storedToken) {
-        // No stored token — user is not logged in
         setIsLoading(false);
         return;
       }
 
-      // Token found — set header and validate with the backend
       setAxiosAuthHeader(storedToken);
 
       try {
         const { data } = await axios.get('/api/auth/me');
-
         if (data.success) {
-          // Token is valid — restore user state
           setUser(data.user);
           setToken(storedToken);
         } else {
-          // Server rejected the token (shouldn't normally happen, but be safe)
+          // Backend rejected the token for some reason - start fresh
           clearAuth();
         }
       } catch (error) {
-        // Token is expired or invalid — clear everything
+        // Most likely a 401 (expired/invalid token) - clear everything
         console.warn('Session restore failed:', error?.response?.data?.message || error.message);
         clearAuth();
       } finally {
@@ -98,9 +82,10 @@ export const AuthProvider = ({ children }) => {
     };
 
     restoreSession();
-  }, []); // Empty dep array — only runs once on mount
+  }, []); // runs once on mount - empty deps is intentional here
 
-  // ── Helpers ───────────────────────────────────────────────────────────────────
+  // --- clearAuth ------------------------------------------------------------
+  // Central place to wipe all auth state - used by logout() and the restore failure path
   const clearAuth = () => {
     localStorage.removeItem('expenseToken');
     setAxiosAuthHeader(null);
@@ -108,14 +93,8 @@ export const AuthProvider = ({ children }) => {
     setToken(null);
   };
 
-  // ── login() ────────────────────────────────────────────────────────────────
-  /**
-   * Called by LoginPage after a successful POST /api/auth/login.
-   * Stores the JWT and user object, and sets the Axios default header.
-   *
-   * @param {string} jwt      — JWT token from the API response
-   * @param {object} userData — User object from the API response
-   */
+  // --- login ----------------------------------------------------------------
+  // Called by LoginPage after a successful POST /api/auth/login response
   const login = (jwt, userData) => {
     localStorage.setItem('expenseToken', jwt);
     setAxiosAuthHeader(jwt);
@@ -123,82 +102,55 @@ export const AuthProvider = ({ children }) => {
     setUser(userData);
   };
 
-  // ── loginWithGoogle() ──────────────────────────────────────────────────────
-  /**
-   * Called by LoginPage/RegisterPage after a successful Google OAuth popup.
-   * Sends the Google ID token to our backend for verification, then logs the user in.
-   * * @param {string} credentialToken — The raw JWT returned directly by Google
-   */
+  // --- loginWithGoogle ------------------------------------------------------
+  // Sends the raw Google ID token to our backend, which verifies it and returns
+  // our own app JWT. Then uses the same storage path as regular login.
   const loginWithGoogle = async (credentialToken) => {
-    const { data } = await axios.post('/api/auth/google-login', { 
-      token: credentialToken 
-    });
-    
-    // The backend responds with our own app's JWT and the user object
+    const { data } = await axios.post('/api/auth/google-login', { token: credentialToken });
     const { token: appToken, user: userData } = data;
-    
-    // Utilize the exact same storage flow as standard login
     localStorage.setItem('expenseToken', appToken);
     setAxiosAuthHeader(appToken);
     setToken(appToken);
     setUser(userData);
   };
 
-  // ── logout() ─────────────────────────────────────────────────────────────────
-  /**
-   * Clears all auth state. The Navbar calls this when the user clicks "Logout".
-   * Navigation back to /login is handled by App.jsx's ProtectedRoute component
-   * (which watches the user state) or can be triggered by the caller.
-   */
+  // --- logout ---------------------------------------------------------------
+  // Navigation back to /login is handled by the caller (Navbar) or by
+  // ProtectedRoute watching the user state drop to null
   const logout = () => {
     clearAuth();
   };
 
-  // ── updateUser() ──────────────────────────────────────────────────────────────
-  /**
-   * Patches the local user state without re-fetching from the backend.
-   * Used after budget updates (PUT /api/auth/budget) so the dashboard
-   * reflects the new monthlyBudget immediately.
-   *
-   * @param {Partial<object>} updates — Partial user object to merge
-   */
+  // --- updateUser -----------------------------------------------------------
+  // Merges partial updates into local user state - used after budget changes
+  // so the Navbar shows the new monthlyBudget without a full /me re-fetch
   const updateUser = (updates) => {
     setUser((prev) => ({ ...prev, ...updates }));
   };
 
-  // ── Context Value ─────────────────────────────────────────────────────────────
-  const contextValue = {
-    user,
-    token,
-    isLoading,
-    login,
-    loginWithGoogle, // ✦ Now properly exported to the rest of the app
-    logout,
-    updateUser,
-    isAuthenticated: !!user,
-  };
-
   return (
-    <AuthContext.Provider value={contextValue}>
+    <AuthContext.Provider value={{
+      user,
+      token,
+      isLoading,
+      login,
+      loginWithGoogle,
+      logout,
+      updateUser,
+      isAuthenticated: !!user,
+    }}>
       {children}
     </AuthContext.Provider>
   );
 };
 
-// ── Custom Hook ────────────────────────────────────────────────────────────────
-/**
- * useAuth() — consume the AuthContext from any component.
- *
- * Usage:
- * const { user, login, logout, isAuthenticated } = useAuth();
- *
- * Throws a descriptive error if used outside of <AuthProvider>.
- */
+// --- useAuth hook -------------------------------------------------------------
+// Throws a clear error if used outside AuthProvider - saved me debugging time
+// more than once when I accidentally used it in a component outside the tree
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
+  if (!context)
     throw new Error('useAuth() must be used inside an <AuthProvider>. Check your component tree.');
-  }
   return context;
 };
 

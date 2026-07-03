@@ -1,130 +1,92 @@
 /**
  * context/ToastContext.jsx
  *
- * Global Toast Notification Context
- *
- * Provides the entire React tree with a `useToast()` hook that lets any
- * component fire a toast notification without prop-drilling or local state.
+ * Global toast notification system - any component can fire a toast without
+ * prop-drilling or managing local state.
  *
  * Toast object shape:
  *   {
- *     id:       string,   — unique key (Date.now + random suffix)
+ *     id:       string,            - unique key generated on creation
  *     type:     'success' | 'error' | 'warning' | 'info',
- *     title:    string,   — bold headline (optional)
- *     message:  string,   — body text
- *     duration: number,   — ms before auto-dismiss (default 4000, 0 = sticky)
+ *     title:    string | undefined, - optional bold headline
+ *     message:  string,            - the actual body text
+ *     duration: number,            - ms before auto-dismiss (0 = sticky)
  *   }
  *
  * Usage from any component:
  *   const { toast } = useToast();
+ *   toast.success('Transaction saved!');
+ *   toast.error('Something went wrong.', 'API Error');
+ *   toast.warning('Approaching budget limit.');
+ *   toast.info('Use the 🎤 button to dictate transactions.');
  *
- *   toast.success('Saved!', 'Transaction added successfully.');
- *   toast.error('Failed', err.response?.data?.message);
- *   toast.warning('Heads up', 'You are nearing your budget limit.');
- *   toast.info('Tip', 'Use the 🎤 button to dictate transactions.');
+ * How auto-dismiss works:
+ *   Each toast gets its own setTimeout stored in a ref map.
+ *   Manual dismiss clears that timer first to prevent the removal running twice.
+ *   Sticky toasts (duration = 0) never get a timer.
  *
- * Architecture:
- *   ToastContext holds the `toasts` array and `addToast` / `removeToast` actions.
- *   <ToastContainer /> (in App.jsx) reads the array and renders the stack.
- *   Each toast auto-dismisses after `duration` ms using a per-toast setTimeout.
- *   The timer is cleared on manual dismiss to prevent double-removal.
- *
- * MERN Data Flow:
- *   API call in component → success/error → useToast().toast.success/error()
- *   → ToastContext.addToast() → toasts[] state update
- *   → ToastContainer re-renders → animated banner appears → auto-dismissed
+ * ToastContainer in App.jsx reads the toasts array and renders the visual stack.
  */
 
 import { createContext, useContext, useState, useCallback, useRef } from 'react';
 
-// ── Context ────────────────────────────────────────────────────────────────────
 const ToastContext = createContext(null);
 
-// ── Default durations per type (ms) ───────────────────────────────────────────
+// Default auto-dismiss durations - errors stay longer since users need to read them
 const DEFAULT_DURATIONS = {
   success: 4000,
-  error:   6000,   // Errors stay longer — user needs to read them
+  error:   6000,
   warning: 5000,
   info:    4000,
 };
 
-// ── Provider ───────────────────────────────────────────────────────────────────
 export const ToastProvider = ({ children }) => {
-  // Array of active toast objects — ToastContainer renders this list
   const [toasts, setToasts] = useState([]);
 
-  // Keep track of auto-dismiss timers so we can clear them on manual dismiss
-  // Map<id → timeoutId>
+  // Map of toast id → setTimeout id - kept in a ref so it doesn't trigger re-renders
   const timers = useRef({});
 
-  // ── removeToast ─────────────────────────────────────────────────────────────
+  // --- removeToast ----------------------------------------------------------
   const removeToast = useCallback((id) => {
-    // Clear the auto-dismiss timer first to prevent double-removal
+    // Clear the auto-dismiss timer first - otherwise it fires after manual dismiss
+    // and tries to remove a toast that's already gone
     if (timers.current[id]) {
       clearTimeout(timers.current[id]);
       delete timers.current[id];
     }
-    // Filter out the toast from state — triggers re-render in ToastContainer
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  // ── addToast ────────────────────────────────────────────────────────────────
-  /**
-   * Core function — adds a toast to the stack.
-   *
-   * @param {object} options
-   * @param {'success'|'error'|'warning'|'info'} options.type
-   * @param {string} options.message   — Required body text
-   * @param {string} [options.title]   — Optional bold headline
-   * @param {number} [options.duration] — 0 = sticky (no auto-dismiss)
-   */
+  // --- addToast -------------------------------------------------------------
   const addToast = useCallback(({ type = 'info', message, title, duration }) => {
-    const id = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    // Using both Date.now() and a random suffix to avoid collisions if two
+    // toasts fire in the same millisecond (happens more than you'd think in dev)
+    const id               = `toast_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const resolvedDuration = duration ?? DEFAULT_DURATIONS[type] ?? 4000;
 
     const toast = { id, type, message, title, duration: resolvedDuration };
 
     setToasts((prev) => {
-      // Cap at 5 simultaneous toasts — remove oldest if over limit
       const updated = [...prev, toast];
+      // Cap at 5 simultaneous toasts - drop the oldest if we go over
       return updated.length > 5 ? updated.slice(updated.length - 5) : updated;
     });
 
-    // Schedule auto-dismiss (skip if duration = 0 → sticky)
-    if (resolvedDuration > 0) {
+    if (resolvedDuration > 0)
       timers.current[id] = setTimeout(() => removeToast(id), resolvedDuration);
-    }
 
-    return id; // Caller can use this to manually dismiss early
+    return id; // caller can use this to dismiss the toast programmatically early
   }, [removeToast]);
 
-  // ── Convenience methods ──────────────────────────────────────────────────────
-  /**
-   * Shorthand API exposed via useToast():
-   *   toast.success(message, title?, duration?)
-   *   toast.error(message, title?, duration?)
-   *   toast.warning(message, title?, duration?)
-   *   toast.info(message, title?, duration?)
-   *
-   * Note the argument order: message first, title second — this matches
-   * the most common usage where you always have a message but title is optional.
-   */
+  // --- Convenience methods --------------------------------------------------
+  // Argument order: message first, title second - title is optional in most calls
   const toast = {
-    success: (message, title, duration) =>
-      addToast({ type: 'success', message, title, duration }),
-
-    error: (message, title, duration) =>
-      addToast({ type: 'error', message, title, duration }),
-
-    warning: (message, title, duration) =>
-      addToast({ type: 'warning', message, title, duration }),
-
-    info: (message, title, duration) =>
-      addToast({ type: 'info', message, title, duration }),
-
-    // Raw access for custom config
-    add: addToast,
-    dismiss: removeToast,
+    success: (message, title, duration) => addToast({ type: 'success', message, title, duration }),
+    error:   (message, title, duration) => addToast({ type: 'error',   message, title, duration }),
+    warning: (message, title, duration) => addToast({ type: 'warning', message, title, duration }),
+    info:    (message, title, duration) => addToast({ type: 'info',    message, title, duration }),
+    add:     addToast,     // raw access for custom config
+    dismiss: removeToast,  // manual dismiss by id
   };
 
   return (
@@ -134,25 +96,14 @@ export const ToastProvider = ({ children }) => {
   );
 };
 
-// ── Custom Hook ────────────────────────────────────────────────────────────────
-/**
- * useToast() — consume the ToastContext from any component.
- *
- * Returns: { toast, toasts, removeToast }
- *
- * Example:
- *   const { toast } = useToast();
- *   toast.success('Transaction saved!');
- *   toast.error('Something went wrong.', 'API Error');
- */
+// --- useToast hook ------------------------------------------------------------
 export const useToast = () => {
   const context = useContext(ToastContext);
-  if (!context) {
+  if (!context)
     throw new Error(
       'useToast() must be used inside a <ToastProvider>. ' +
       'Make sure <ToastProvider> wraps your component tree in App.jsx.'
     );
-  }
   return context;
 };
 

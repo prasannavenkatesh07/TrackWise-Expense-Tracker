@@ -1,34 +1,37 @@
 /**
  * controllers/transactionController.js
  *
- * Transaction Controller — Phase A + AI Quick Add implementation.
+ * Handles all transaction operations - standard CRUD, data aggregations,
+ * CSV export, and the three AI-powered endpoints (Quick Add, Monthly Report,
+ * Receipt Scanner) that all run through Gemini.
  *
- * Route map:
- * GET    /api/transactions               → getAllTransactions  (filter / pagination / date range)
- * POST   /api/transactions               → createTransaction   (supports isRecurring)
- * PUT    /api/transactions/:id           → editTransaction     (Phase A)
- * DELETE /api/transactions/:id           → deleteTransaction
- * GET    /api/transactions/summary       → getSummary          (date-range aware)
- * GET    /api/transactions/insights      → getInsights         (locked to current month)
- * GET    /api/transactions/export        → exportCSV
- * GET    /api/transactions/titles        → getTitleSuggestions (Phase A — autocomplete)
- * GET    /api/transactions/monthly       → getMonthlyTrend     (Phase A — reports)
- * POST   /api/transactions/quick-add     → parseQuickAdd       (AI Quick Add — Gemini NLP)
- * GET    /api/transactions/ai-report     → generateAIReport    (Sprint 2 — Gemini monthly report)
- * POST   /api/transactions/scan-receipt  → parseReceiptImage   (Sprint 3 — Gemini vision OCR)
+ * Routes:
+ *   GET    /api/transactions               → getAllTransactions   (filter + pagination)
+ *   POST   /api/transactions               → createTransaction
+ *   PUT    /api/transactions/:id           → editTransaction
+ *   DELETE /api/transactions/:id           → deleteTransaction
+ *   GET    /api/transactions/summary       → getSummary          (supports date range)
+ *   GET    /api/transactions/insights      → getInsights         (current month only)
+ *   GET    /api/transactions/export        → exportCSV
+ *   GET    /api/transactions/titles        → getTitleSuggestions (autocomplete)
+ *   GET    /api/transactions/monthly       → getMonthlyTrend     (reports charts)
+ *   POST   /api/transactions/quick-add     → parseQuickAdd       (Gemini NLP)
+ *   GET    /api/transactions/ai-report     → generateAIReport    (Gemini monthly report)
+ *   POST   /api/transactions/scan-receipt  → parseReceiptImage   (Gemini Vision OCR)
  *
- * ALL routes are PROTECTED — req.user is injected by authMiddleware.protect.
+ * ALL routes are protected - req.user is attached by authMiddleware.protect.
  */
 
 const { validationResult } = require("express-validator");
 const { GoogleGenAI } = require("@google/genai");
 const Transaction = require("../models/Transaction");
-const Budget = require("../models/Budget"); // ✦ Added Budget Model for AI Report
+const Budget = require("../models/Budget");
 const { TRANSACTION_CATEGORIES } = Transaction;
 
-// ─── Gemini Client — lazy singleton ───────────────────────────────────────────
-// Initialised on first AI request rather than at module load so that a missing
-// GEMINI_API_KEY only breaks the AI endpoints, not the entire transaction router.
+// --- Gemini Client ------------------------------------------------------------
+// Initialised on the first AI request rather than at module load -
+// that way a missing GEMINI_API_KEY only breaks the AI endpoints,
+// not the entire transaction router. The ??= keeps it as a single instance.
 let _genai = null;
 const getGenAI = () => {
   if (!process.env.GEMINI_API_KEY)
@@ -36,88 +39,75 @@ const getGenAI = () => {
   return (_genai ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }));
 };
 
-// ─── extractAndParseJSON ───────────────────────────────────────────────────────
+// --- extractAndParseJSON ------------------------------------------------------
 /**
- * Robustly extracts and parses a JSON object from a raw Gemini text response.
+ * Pulls a JSON object out of a raw Gemini text response and parses it.
  *
- * Even with `responseMimeType: "application/json"` + `responseSchema`,
- * gemini-2.5-flash occasionally:
- * - wraps the JSON in ```json ... ``` or ``` ... ``` code fences
- * - prefixes/suffixes the JSON with conversational text ("Sure! Here's...")
- * - adds trailing commentary after the closing brace
+ * Even with responseMimeType: "application/json", Gemini occasionally:
+ *   - wraps the output in ```json ... ``` code fences
+ *   - adds conversational text before/after the JSON ("Sure! Here's...")
+ *   - truncates mid-stream if it hits maxOutputTokens
  *
- * This function defends against all of the above before calling JSON.parse.
+ * This function strips all of that before calling JSON.parse,
+ * and falls back to repairTruncatedJSON if the first parse attempt fails.
  *
- * @param {string} rawText - The raw text returned by Gemini.
- * @returns {object} The parsed JSON object.
- * @throws {Error} If no valid JSON object can be extracted/parsed.
+ * @param {string} rawText - The raw string returned by Gemini
+ * @returns {object} The parsed JSON object
+ * @throws {Error} If no valid JSON can be extracted after cleaning + repair
  */
 const extractAndParseJSON = (rawText) => {
-  if (typeof rawText !== "string" || !rawText.trim()) {
+  if (typeof rawText !== "string" || !rawText.trim())
     throw new Error("extractAndParseJSON: empty or non-string input.");
-  }
 
-  // 1. Forcefully strip markdown code fences (```json ... ``` or ``` ... ```),
-  //    wherever they appear — not just at the very start/end.
+  // Strip markdown code fences wherever they appear (not just at the edges)
   let cleaned = rawText
     .replace(/```json/gi, "")
     .replace(/```/g, "")
     .trim();
 
-  // 2. Slice to the substring starting at the first "{". If a matching final
-  //    "}" exists, slice up to (and including) it — but if the response was
-  //    cut off mid-stream (e.g. hit maxOutputTokens) there may be NO closing
-  //    "}" at all, so don't bail out yet; fall through to the repair step below.
+  // Slice to the substring that starts at the first "{" -
+  // cuts off any conversational preamble Gemini added
   const firstBrace = cleaned.indexOf("{");
-  if (firstBrace === -1) {
+  if (firstBrace === -1)
     throw new Error(
-      `extractAndParseJSON: no JSON object found in response. Raw: ${rawText}`,
+      `extractAndParseJSON: no JSON object found. Raw: ${rawText}`,
     );
-  }
 
   const lastBrace = cleaned.lastIndexOf("}");
+  // If there's a closing brace, slice to include it.
+  // If not (truncated output), take from the first brace and let repairTruncatedJSON handle it.
   cleaned =
     lastBrace > firstBrace
       ? cleaned.slice(firstBrace, lastBrace + 1)
       : cleaned.slice(firstBrace);
 
-  // 3. Safe JSON.parse
   try {
     return JSON.parse(cleaned);
   } catch (err) {
-    // 4. Repair fallback — the response may have been truncated mid-JSON
-    //    (e.g. hit maxOutputTokens while writing a long string/array value).
-    //    Attempt to close any open strings/brackets and re-parse before
-    //    giving up entirely.
+    // First parse failed - try to close any open brackets and re-parse
     try {
       return JSON.parse(repairTruncatedJSON(cleaned));
     } catch (repairErr) {
       throw new Error(
-        `extractAndParseJSON: JSON.parse failed after cleaning and repair attempt. Cleaned: ${cleaned} | Original error: ${err.message} | Repair error: ${repairErr.message}`,
+        `extractAndParseJSON: failed after cleaning and repair. ` +
+          `Cleaned: ${cleaned} | Error: ${err.message} | Repair error: ${repairErr.message}`,
       );
     }
   }
 };
 
-// ─── repairTruncatedJSON ────────────────────────────────────────────────────────
+// --- repairTruncatedJSON ------------------------------------------------------
 /**
- * Best-effort repair for a JSON string that was cut off mid-stream (most
- * commonly because the model hit `maxOutputTokens` while still writing a
- * string value or an array/object of items).
+ * Best-effort fix for a JSON string that was cut off mid-stream -
+ * most commonly because Gemini hit maxOutputTokens while writing a value.
  *
- * Strategy:
- * - If we're inside an unterminated string literal, close the quote.
- * - Strip any trailing dangling comma.
- * - Append the correct closing brackets/braces to balance what's open,
- * based on a simple stack walk of the original (unrepaired) string.
+ * Strategy: walk the string to find any unclosed strings, arrays, or objects,
+ * then append the right closing characters. Only ever adds characters,
+ * never rewrites, so a successfully parsed result still reflects exactly
+ * what Gemini produced.
  *
- * This is intentionally conservative — it only ever appends characters,
- * never removes/rewrites content — so a successfully-parsed result still
- * faithfully reflects everything the model actually produced.
- *
- * @param {string} str - The cleaned (but possibly truncated) JSON string.
- * @returns {string} A string with appended closing characters, ready for
- * another JSON.parse attempt.
+ * @param {string} str - Cleaned but possibly truncated JSON
+ * @returns {string} The same string with closing brackets appended
  */
 const repairTruncatedJSON = (str) => {
   let result = str;
@@ -139,45 +129,42 @@ const repairTruncatedJSON = (str) => {
       continue;
     }
     if (inString) continue;
-
     if (char === "{" || char === "[") stack.push(char);
     else if (char === "}" || char === "]") stack.pop();
   }
 
-  // If the response was cut off mid-string-literal, close the quote first.
+  // If we were mid-string when it cut off, close the quote first
   if (inString) result += '"';
 
-  // Remove a trailing comma (with optional whitespace) that would otherwise
-  // produce invalid JSON once we append closing brackets — e.g.
-  // `"actionItems": ["one", "two",` → `"actionItems": ["one", "two"`.
+  // A trailing comma before the closing bracket would be invalid JSON - strip it
   result = result.replace(/,\s*$/, "");
 
-  // Close any still-open brackets/braces, innermost-first.
-  for (let i = stack.length - 1; i >= 0; i--) {
+  // Close any unclosed brackets from innermost to outermost
+  for (let i = stack.length - 1; i >= 0; i--)
     result += stack[i] === "{" ? "}" : "]";
-  }
 
   return result;
 };
 
-// ─── extractGeminiText ──────────────────────────────────────────────────────────
+// --- extractGeminiText --------------------------------------------------------
 /**
- * Safely extracts the text payload from a @google/genai response object.
+ * Pulls the plain text out of a @google/genai response object.
+ * The new SDK exposes response.text as a convenience getter, but not all
+ * response shapes populate it - the candidates path is the fallback.
  *
- * The new SDK exposes `response.text` as a convenience getter, but falls back
- * to the raw candidates path for older/edge-case response shapes.
- *
- * @param {object} response - The response object from `models.generateContent`.
- * @returns {string|undefined} The extracted text, or undefined if not present.
+ * @param {object} response - Response from models.generateContent
+ * @returns {string|undefined}
  */
 const extractGeminiText = (response) => {
-  if (typeof response?.text === "string" && response.text.length > 0) {
+  if (typeof response?.text === "string" && response.text.length > 0)
     return response.text;
-  }
   return response?.candidates?.[0]?.content?.parts?.[0]?.text;
 };
 
-// ─── GET /api/transactions ────────────────────────────────────────────────────
+// --- @route   GET /api/transactions ------------------------------------------
+// @desc    Get all transactions for the logged-in user with optional filters
+// @access  Private
+// Query params: ?type= ?category= ?search= ?from= ?to= ?page= ?limit=
 const getAllTransactions = async (req, res, next) => {
   try {
     const filter = { user_id: req.user._id };
@@ -191,24 +178,27 @@ const getAllTransactions = async (req, res, next) => {
     )
       filter.category = req.query.category;
 
+    // Case-insensitive partial match on the title field
     if (req.query.search && req.query.search.trim())
       filter.title = { $regex: req.query.search.trim(), $options: "i" };
 
-    // Date range — History page date picker: ?from=YYYY-MM-DD&to=YYYY-MM-DD
+    // Date range - used by the History page date picker
     if (req.query.from || req.query.to) {
       filter.date = {};
       if (req.query.from) filter.date.$gte = new Date(req.query.from);
       if (req.query.to) {
         const to = new Date(req.query.to);
-        to.setHours(23, 59, 59, 999);
+        to.setHours(23, 59, 59, 999); // include the full last day
         filter.date.$lte = to;
       }
     }
 
+    // Capping limit at 50 so nobody accidentally requests 10,000 documents
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
     const skip = (page - 1) * limit;
 
+    // Running count and fetch in parallel to avoid two sequential round trips
     const [transactions, totalCount] = await Promise.all([
       Transaction.find(filter)
         .sort({ date: -1 })
@@ -231,7 +221,9 @@ const getAllTransactions = async (req, res, next) => {
   }
 };
 
-// ─── POST /api/transactions ───────────────────────────────────────────────────
+// --- @route   POST /api/transactions -----------------------------------------
+// @desc    Create a new transaction
+// @access  Private
 const createTransaction = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -253,6 +245,8 @@ const createTransaction = async (req, res, next) => {
       recurringFrequency,
     } = req.body;
 
+    // Catch this before Mongoose does - the error message from the schema isn't
+    // as clear as just telling them directly
     if (isRecurring && !recurringFrequency)
       return res.status(400).json({
         success: false,
@@ -266,9 +260,10 @@ const createTransaction = async (req, res, next) => {
       category,
       date: date || Date.now(),
       notes: notes || "",
-      user_id: req.user._id, // From JWT — never from body
+      user_id: req.user._id, // always from the JWT, never from the request body
       isRecurring: !!isRecurring,
       recurringFrequency: isRecurring ? recurringFrequency : null,
+      // Set lastGeneratedAt now so the cron job doesn't immediately duplicate it on startup
       lastGeneratedAt: isRecurring ? new Date() : null,
     });
 
@@ -282,7 +277,9 @@ const createTransaction = async (req, res, next) => {
   }
 };
 
-// ─── PUT /api/transactions/:id  (Phase A) ─────────────────────────────────────
+// --- @route   PUT /api/transactions/:id --------------------------------------
+// @desc    Edit an existing transaction (partial update - only send changed fields)
+// @access  Private
 const editTransaction = async (req, res, next) => {
   try {
     const errors = validationResult(req);
@@ -310,7 +307,8 @@ const editTransaction = async (req, res, next) => {
         message: "Recurring frequency is required when isRecurring is true.",
       });
 
-    // Build partial update — only include fields that were actually sent
+    // Build the update object with only the fields that were actually sent -
+    // this way a PUT with just { amount: 500 } doesn't wipe out the other fields
     const upd = {};
     if (title !== undefined) upd.title = title;
     if (amount !== undefined) upd.amount = Number(amount);
@@ -323,6 +321,7 @@ const editTransaction = async (req, res, next) => {
       upd.recurringFrequency = isRecurring ? recurringFrequency : null;
     }
 
+    // Scoping the query by user_id so users can't edit each other's transactions
     const transaction = await Transaction.findOneAndUpdate(
       { _id: req.params.id, user_id: req.user._id },
       { $set: upd },
@@ -345,9 +344,12 @@ const editTransaction = async (req, res, next) => {
   }
 };
 
-// ─── DELETE /api/transactions/:id ─────────────────────────────────────────────
+// --- @route   DELETE /api/transactions/:id -----------------------------------
+// @desc    Delete a transaction by ID
+// @access  Private
 const deleteTransaction = async (req, res, next) => {
   try {
+    // Scoping by user_id prevents one user from deleting another's transactions
     const transaction = await Transaction.findOneAndDelete({
       _id: req.params.id,
       user_id: req.user._id,
@@ -370,19 +372,24 @@ const deleteTransaction = async (req, res, next) => {
   }
 };
 
-// ─── GET /api/transactions/summary ───────────────────────────────────────────
+// --- @route   GET /api/transactions/summary ----------------------------------
+// @desc    Get total income, expenses, balance, and category breakdown
+// @access  Private
+// Query params: ?from=YYYY-MM-DD&to=YYYY-MM-DD (optional - returns all time if omitted)
 const getSummary = async (req, res, next) => {
   try {
     const options = {};
     if (req.query.from) options.from = req.query.from;
     if (req.query.to) options.to = req.query.to;
 
+    // Fetching summary and breakdown in parallel - both are aggregation queries
     const [summary, categoryBreakdown] = await Promise.all([
       Transaction.getSummaryForUser(req.user._id, options),
       Transaction.getCategoryBreakdownForUser(req.user._id, options),
     ]);
 
     const monthlyBudget = req.user.monthlyBudget || 50000;
+    // Cap at 100 so the frontend progress bar doesn't overflow
     const budgetUsedPercent =
       monthlyBudget > 0
         ? Math.min(
@@ -402,10 +409,12 @@ const getSummary = async (req, res, next) => {
   }
 };
 
-// ─── GET /api/transactions/insights ──────────────────────────────────────────
+// --- @route   GET /api/transactions/insights ---------------------------------
+// @desc    Rule-based spending insights for the current month
+// @access  Private
+// Always locked to the current month - the dashboard shouldn't show stale insights
 const getInsights = async (req, res, next) => {
   try {
-    // ✦ Fix: Insights should always evaluate the CURRENT month's budget health
     const now = new Date();
     const fromDate = new Date(now.getFullYear(), now.getMonth(), 1);
     const toDate = new Date(
@@ -426,7 +435,7 @@ const getInsights = async (req, res, next) => {
 
     const insights = [];
 
-    // Rule 1 — Food & Groceries > 40% of total expenses
+    // Rule 1: Flag if Food & Groceries takes up more than 40% of total expenses
     const food = breakdown.find((c) => c.category === "Food & Groceries");
     if (food && summary.totalExpense > 0) {
       const pct = (food.total / summary.totalExpense) * 100;
@@ -434,11 +443,11 @@ const getInsights = async (req, res, next) => {
         insights.push({
           type: "warning",
           code: "FOOD_OVERSPEND",
-          message: `⚠️ Food & Groceries is ${pct.toFixed(1)}% of your expenses — consider cutting dining out.`,
+          message: `⚠️ Food & Groceries is ${pct.toFixed(1)}% of your expenses - consider cutting dining out.`,
         });
     }
 
-    // Rule 2 — Savings rate ≥ 20%
+    // Rule 2: Give a thumbs-up if they're saving 20% or more of income
     if (summary.totalIncome > 0 && summary.totalExpense > 0) {
       const rate =
         ((summary.totalIncome - summary.totalExpense) / summary.totalIncome) *
@@ -447,11 +456,11 @@ const getInsights = async (req, res, next) => {
         insights.push({
           type: "success",
           code: "GOOD_SAVINGS",
-          message: `🎉 You're saving ${rate.toFixed(1)}% of your income — great discipline!`,
+          message: `🎉 You're saving ${rate.toFixed(1)}% of your income - great discipline!`,
         });
     }
 
-    // Rule 3 — Budget exceeded
+    // Rule 3: Warn if monthly budget is blown
     const budget = req.user.monthlyBudget || 50000;
     if (summary.totalExpense > budget)
       insights.push({
@@ -460,13 +469,18 @@ const getInsights = async (req, res, next) => {
         message: `🚨 Monthly budget of ₹${budget.toLocaleString("en-IN")} exceeded by ₹${(summary.totalExpense - budget).toLocaleString("en-IN")}.`,
       });
 
+    // TODO: add a rule for when a single non-essential category (Entertainment, Other)
+    // exceeds 25% of total expenses - spotted this as a useful signal during testing
+
     res.status(200).json({ success: true, data: { insights, summary } });
   } catch (error) {
     next(error);
   }
 };
 
-// ─── GET /api/transactions/export ────────────────────────────────────────────
+// --- @route   GET /api/transactions/export -----------------------------------
+// @desc    Download all transactions as a CSV file
+// @access  Private
 const exportCSV = async (req, res, next) => {
   try {
     const transactions = await Transaction.find({ user_id: req.user._id })
@@ -493,7 +507,7 @@ const exportCSV = async (req, res, next) => {
     const rows = transactions.map((t) =>
       [
         new Date(t.date).toLocaleDateString("en-IN"),
-        `"${t.title.replace(/"/g, '""')}"`,
+        `"${t.title.replace(/"/g, '""')}"`, // escape any quotes inside the title
         t.category,
         t.type,
         t.amount,
@@ -516,7 +530,9 @@ const exportCSV = async (req, res, next) => {
   }
 };
 
-// ─── GET /api/transactions/titles  (Phase A — autocomplete) ──────────────────
+// --- @route   GET /api/transactions/titles -----------------------------------
+// @desc    Return matching transaction titles for autocomplete (?q=search term)
+// @access  Private
 const getTitleSuggestions = async (req, res, next) => {
   try {
     const { q } = req.query;
@@ -534,9 +550,13 @@ const getTitleSuggestions = async (req, res, next) => {
   }
 };
 
-// ─── GET /api/transactions/monthly  (Phase A — reports charts) ───────────────
+// --- @route   GET /api/transactions/monthly ----------------------------------
+// @desc    Get income vs expense totals grouped by month for the reports chart
+// @access  Private
+// Query params: ?months=6 (default 6, max 24)
 const getMonthlyTrend = async (req, res, next) => {
   try {
+    // Cap at 24 so nobody accidentally requests 10 years of data
     const months = Math.min(24, Math.max(1, parseInt(req.query.months) || 6));
     const trend = await Transaction.getMonthlyTrend(req.user._id, months);
     res.status(200).json({ success: true, months, data: trend });
@@ -545,53 +565,39 @@ const getMonthlyTrend = async (req, res, next) => {
   }
 };
 
-// ─── POST /api/transactions/quick-add  (AI Quick Add — Gemini NLP) ────────────
-/**
- * Accepts a natural language sentence from the user and uses Gemini to
- * parse it into a structured transaction object ready to auto-fill the form.
- *
- * Request body:
- * { text: "I bought groceries at Spar for 1200 rupees today" }
- *
- * Response:
- * {
- * success: true,
- * data: {
- * title:    "Groceries at Spar",
- * amount:   1200,
- * type:     "Expense",
- * category: "Food & Groceries",
- * date:     "2025-07-14"
- * }
- * }
- */
+// --- @route   POST /api/transactions/quick-add -------------------------------
+// @desc    Parse a natural language sentence into a transaction object via Gemini
+// @access  Private
+//
+// Request:  { text: "bought groceries at Spar for 1200 rupees today" }
+// Response: { success: true, data: { title, amount, type, category, date } }
+//
+// The response pre-fills the transaction form - the user reviews it and confirms.
+// Nothing is saved to the DB here; that happens when they submit the form.
 const parseQuickAdd = async (req, res, next) => {
   try {
     const { text } = req.body;
 
-    // ── Basic input validation ───────────────────────────────────────────────
-    if (!text || typeof text !== "string" || text.trim().length < 3) {
+    if (!text || typeof text !== "string" || text.trim().length < 3)
       return res.status(400).json({
         success: false,
         message:
           "Please provide a sentence describing your transaction (min 3 characters).",
       });
-    }
 
-    if (text.trim().length > 500) {
+    if (text.trim().length > 500)
       return res.status(400).json({
         success: false,
         message:
           "Input too long. Please keep your description under 500 characters.",
       });
-    }
 
-    // ── Build today's date string for the prompt ─────────────────────────────
-    const todayISO = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+    const todayISO = new Date().toISOString().split("T")[0];
 
-    // ── Strict Gemini system prompt ──────────────────────────────────────────
+    // The system prompt is very strict about output format - no markdown, no prose,
+    // just raw JSON. Low temperature keeps it deterministic.
     const systemPrompt = `You are a financial transaction parser for an Indian personal finance app called TrackWise. 
-Your ONLY job is to extract structured transaction data from a natural language sentence and return it as a single valid JSON object with NO markdown, NO code fences, NO explanation text whatsoever — just raw JSON.
+Your ONLY job is to extract structured transaction data from a natural language sentence and return it as a single valid JSON object with NO markdown, NO code fences, NO explanation text whatsoever - just raw JSON.
 
 TODAY'S DATE: ${todayISO}
 
@@ -609,14 +615,14 @@ EXTRACTION RULES (follow these exactly, no exceptions):
    - "Salary"           → salary, wages, freelance income, bonus, stipend, paycheck
    - "Other"            → anything that does not clearly fit the above categories
 5. "date": In YYYY-MM-DD format. "today" or no date mentioned = ${todayISO}. "yesterday" = subtract 1 day from today. Named days/months should be resolved relative to today's date. If the year is ambiguous, use the current year.
+6. GIBBERISH RULE: If the user's input is gibberish, conversational, or clearly does not describe a financial expense or income, return null for BOTH the title and the amount.
 
-OUTPUT FORMAT — Return ONLY this JSON object, nothing else:
+OUTPUT FORMAT - Return ONLY this JSON object, nothing else:
 {"title":"string","amount":number_or_null,"type":"Income_or_Expense","category":"exact_enum_string","date":"YYYY-MM-DD"}`;
 
-    // ── Call Gemini 2.5 Flash ────────────────────────────────────────────────
     const model = getGenAI().models;
     const response = await model.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.1-flash-lite",
       contents: [
         {
           role: "user",
@@ -625,41 +631,39 @@ OUTPUT FORMAT — Return ONLY this JSON object, nothing else:
       ],
       config: {
         systemInstruction: systemPrompt,
-        // Keep temperature low for deterministic, structured output
-        temperature: 0.1,
+        temperature: 0.1, // want consistent structured output, not creativity
         maxOutputTokens: 256,
       },
     });
 
-    // ── Extract raw text from Gemini response ────────────────────────────────
     const rawText = extractGeminiText(response);
 
-    if (!rawText) {
+    if (!rawText)
       return res.status(502).json({
         success: false,
         message: "AI returned an empty response. Please try again.",
       });
-    }
 
-    // ── Robustly extract and parse JSON (strips code fences, slices to {...}) ─
     let parsed;
     try {
       parsed = extractAndParseJSON(rawText);
     } catch (err) {
+      // console.log("[parseQuickAdd] raw Gemini output:", rawText); // left from debugging
       console.error(
-        "[parseQuickAdd] extractAndParseJSON failed. Raw Gemini output:",
+        "[parseQuickAdd] extractAndParseJSON failed:",
         rawText,
-        "| Error:",
+        "|",
         err.message,
       );
       return res.status(422).json({
         success: false,
         message:
-          "AI could not parse your sentence into a transaction. Try being more specific — e.g. 'Paid ₹500 for electricity bill today'.",
+          "AI could not parse your sentence into a transaction. Try being more specific - e.g. 'Paid ₹500 for electricity bill today'.",
       });
     }
 
-    // ── Validate and sanitise parsed fields ──────────────────────────────────
+    // Validate and sanitise every field before sending back -
+    // Gemini is pretty reliable here but I don't want weird data getting into the form
     const validCategories = [
       "Housing",
       "Food & Groceries",
@@ -675,21 +679,17 @@ OUTPUT FORMAT — Return ONLY this JSON object, nothing else:
       typeof parsed.title === "string"
         ? parsed.title.trim().slice(0, 100)
         : null;
-
     const amount =
       typeof parsed.amount === "number" && parsed.amount > 0
-        ? Math.round(parsed.amount * 100) / 100 // Round to 2 decimal places
+        ? Math.round(parsed.amount * 100) / 100 // rounding to 2 dp so the form input looks clean
         : null;
-
     const type = ["Income", "Expense"].includes(parsed.type)
       ? parsed.type
       : "Expense";
-
     const category = validCategories.includes(parsed.category)
       ? parsed.category
       : "Other";
 
-    // Validate the date is a real date string
     const parsedDate = new Date(parsed.date);
     const date =
       parsed.date &&
@@ -698,14 +698,12 @@ OUTPUT FORMAT — Return ONLY this JSON object, nothing else:
         ? parsed.date
         : todayISO;
 
-    // ── Guard: ensure we got at least a title or amount ─────────────────────
-    if (!title && !amount) {
+    if (!title || !amount)
       return res.status(422).json({
         success: false,
         message:
-          "Couldn't extract a title or amount from your input. Try again with more detail.",
+          "Couldn't extract a clear title or amount from your input. Try again with more detail.",
       });
-    }
 
     return res.status(200).json({
       success: true,
@@ -714,49 +712,34 @@ OUTPUT FORMAT — Return ONLY this JSON object, nothing else:
       data: { title, amount, type, category, date },
     });
   } catch (error) {
-    // Normalise status across @google/genai SDK error shapes
+    // Gemini SDK errors come back with different status shapes depending on the version -
+    // this normalises them before responding
     const status =
       error?.status ?? error?.httpError?.status ?? error?.response?.status;
-    if (status === 400 || status === 403) {
+    if (status === 400 || status === 403)
       return res.status(502).json({
         success: false,
         message: "AI service configuration error. Please contact support.",
       });
-    }
-    if (status === 429 || status === 503) {
+    if (status === 429 || status === 503)
       return res.status(429).json({
         success: false,
         message: "AI service is busy. Please wait a moment and try again.",
       });
-    }
     next(error);
   }
 };
 
-// ─── GET /api/transactions/ai-report  (Sprint 2 — Gemini monthly report) ──────
-/**
- * Pulls the authenticated user's current-month transaction data, feeds it to
- * Gemini 2.5 Flash, and returns a structured "Financial Roast & Report" JSON.
- *
- * Response shape:
- * {
- * success: true,
- * month:   "June 2025",
- * data: {
- * score:       82,
- * summary:     "You had a solid month overall…",
- * roast:       "Your entertainment spend is basically a Netflix empire…",
- * praise:      "Keeping housing under 30% of income? Rare discipline.",
- * actionItems: ["Cut dining out by ₹2,000", "…", "…"]
- * }
- * }
- *
- * Returns 204 (no content) if the user has no transactions this month so the
- * frontend can show an empty-state prompt rather than a confusing AI error.
- */
+// --- @route   GET /api/transactions/ai-report --------------------------------
+// @desc    Generate a Gemini-powered "Financial Roast & Report" for the current month
+// @access  Private
+//
+// Returns a JSON report with: score (1-100), summary, roast, praise, actionItems.
+// Returns 204 if the user has no transactions this month - the frontend
+// shows an empty-state prompt in that case instead of a confusing error.
 const generateAIReport = async (req, res, next) => {
   try {
-    // ── 1. Compute current-month date boundaries ─────────────────────────────
+    // Step 1: compute current-month date boundaries
     const now = new Date();
     const fromDate = new Date(now.getFullYear(), now.getMonth(), 1);
     const toDate = new Date(
@@ -768,37 +751,34 @@ const generateAIReport = async (req, res, next) => {
       59,
       999,
     );
-    const options = {
-      from: fromDate.toISOString(),
-      to:   toDate.toISOString(),
-    };
+    const options = { from: fromDate.toISOString(), to: toDate.toISOString() };
 
-    // Human-readable month label for the response (e.g. "June 2025")
     const monthLabel = now.toLocaleString("en-IN", {
       month: "long",
-      year:  "numeric",
+      year: "numeric",
     });
 
-    // ── 2. Fetch summary, category breakdown, AND budgets in parallel ────────
+    // Step 2: fetch summary, category breakdown, and category budgets in parallel
     const [summary, breakdown, budgets] = await Promise.all([
       Transaction.getSummaryForUser(req.user._id, options),
       Transaction.getCategoryBreakdownForUser(req.user._id, options),
-      Budget.find({ user_id: req.user._id }).lean(), // ✦ Fetch Category Budgets
+      Budget.find({
+        user_id: req.user._id,
+        month: now.getMonth() + 1,
+        year: now.getFullYear(),
+      }).lean(),
     ]);
 
-    // ── 3. Guard: no data this month → skip AI call, return 204 ─────────────
-    if (summary.totalIncome === 0 && summary.totalExpense === 0) {
+    // Step 3: skip the AI call entirely if there's nothing to analyse
+    if (summary.totalIncome === 0 && summary.totalExpense === 0)
       return res.status(204).send();
-    }
 
-    // ── 4. Grab the user's monthly budget ───────────────────────────────────
     const monthlyBudget = req.user.monthlyBudget || 50000;
     const budgetStatus =
       summary.totalExpense > monthlyBudget ? "EXCEEDED" : "WITHIN";
     const budgetDelta = Math.abs(summary.totalExpense - monthlyBudget);
 
-    // ── 5. Format category breakdown as a readable string for the prompt ─────
-    //    e.g. "Food & Groceries: ₹8200 (38.4%), Transport: ₹3100 (14.5%), …"
+    // Step 4: format context strings to inject into the prompt
     const breakdownStr =
       breakdown.length > 0
         ? breakdown
@@ -812,33 +792,37 @@ const generateAIReport = async (req, res, next) => {
             .join(", ")
         : "No expense categories recorded.";
 
-    // ✦ 6. Format Category Budgets
-    const budgetStr = budgets.length > 0
-      ? budgets.map((b) => `- ${b.category}: Limit ₹${b.limit.toLocaleString("en-IN")}`).join("\n")
-      : "No specific category budgets set.";
+    const budgetStr =
+      budgets.length > 0
+        ? budgets
+            .map(
+              (b) =>
+                `- ${b.category}: Limit ₹${b.limit.toLocaleString("en-IN")}`,
+            )
+            .join("\n")
+        : "No specific category budgets set.";
 
-    // ── 7. Build the data context string injected into the Gemini prompt ─────
     const financialContext = [
       `Month: ${monthLabel}`,
       `Total Income:  ₹${summary.totalIncome.toLocaleString("en-IN")}`,
       `Total Expense: ₹${summary.totalExpense.toLocaleString("en-IN")}`,
       `Net Balance:   ₹${summary.balance.toLocaleString("en-IN")}`,
-      `Monthly Global Budget: ₹${monthlyBudget.toLocaleString("en-IN")} — ${budgetStatus} by ₹${budgetDelta.toLocaleString("en-IN")}`,
+      `Monthly Global Budget: ₹${monthlyBudget.toLocaleString("en-IN")} - ${budgetStatus} by ₹${budgetDelta.toLocaleString("en-IN")}`,
       `Savings Rate: ${summary.totalIncome > 0 ? (((summary.totalIncome - summary.totalExpense) / summary.totalIncome) * 100).toFixed(1) : "0.0"}%`,
       `Expense Breakdown: ${breakdownStr}`,
-      `Category Budgets:\n${budgetStr}`, // ✦ Inject budgets here
+      `Category Budgets:\n${budgetStr}`,
     ].join("\n");
 
-    // ── 8. Strict Gemini system prompt ───────────────────────────────────────
+    // Step 5: build the Gemini prompt - telling it to be data-grounded prevents hallucinations
     const systemPrompt = `You are a witty, sharp, and expert financial advisor for TrackWise, an Indian personal finance app. Your clients are salaried professionals in India. All monetary values are in Indian Rupees (₹).
 
-You will be given one month of a user's real financial data. Analyse it carefully and return ONLY a single valid JSON object — absolutely NO markdown, NO code fences, NO explanation text before or after the JSON.
+You will be given one month of a user's real financial data. Analyse it carefully and return ONLY a single valid JSON object - absolutely NO markdown, NO code fences, NO explanation text before or after the JSON.
 
 YOUR ANALYSIS MUST BE GROUNDED STRICTLY IN THE PROVIDED DATA:
 - The "roast" must call out their actual highest expense category, worst spending pattern, or ANY category where they exceeded their individual category budget visible in the numbers. Do NOT invent habits not evidenced by the data.
 - The "praise" must highlight something genuinely positive in the data (good savings rate, staying under global budget, staying within specific category limits, etc.). Do NOT give hollow generic praise.
 - The "score" must reflect the real financial picture: savings rate, budget adherence, and balance between income and expense all influence it.
-- The "actionItems" must be specific to this user's actual spending — reference real category names and real rupee amounts from the data.
+- The "actionItems" must be specific to this user's actual spending - reference real category names and real rupee amounts from the data.
 
 SCORING GUIDE (1–100):
 - 90–100: Expenses well under budget, savings rate ≥ 30%, healthy balance across categories.
@@ -849,7 +833,7 @@ SCORING GUIDE (1–100):
 
 TONE: Witty and slightly sarcastic for the roast (like a brutally honest friend), warm and encouraging for the praise, and clear and actionable for the tips. Keep each field concise.
 
-REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
+REQUIRED JSON STRUCTURE - return exactly these five keys, no more, no less:
 {
   "score":       <integer 1–100>,
   "summary":     "<2–3 sentences: neutral month overview with key numbers>",
@@ -858,10 +842,13 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
   "actionItems": ["<specific tip 1 with ₹ amounts>", "<specific tip 2>", "<specific tip 3>"]
 }`;
 
-    // ── 9. Call Gemini 2.5 Flash ─────────────────────────────────────────────
+    // Step 6: call Gemini
+    // maxOutputTokens is 6000 here - bumped up from 600 because a detailed month with
+    // many categories can push the model past 600, causing it to be cut off mid-JSON.
+    // 6000 is more than enough headroom for this 5-key response.
     const model = getGenAI().models;
     const response = await model.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.1-flash-lite",
       contents: [
         {
           role: "user",
@@ -874,35 +861,27 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
       ],
       config: {
         systemInstruction: systemPrompt,
-        temperature:     0.7, // Slightly higher than quick-add — we want personality
-        // Raised from 600 → 6000. A detailed month (many categories, large
-        // amounts, longer actionItems strings) can push the model past 600
-        // tokens, causing it to be cut off mid-JSON (e.g. mid-string inside
-        // "actionItems") and produce unparseable output. 6000 gives enough
-        // headroom for the full 5-key JSON object even on verbose months.
+        temperature: 0.7, // slightly higher than quick-add - we want some personality
         maxOutputTokens: 6000,
       },
     });
 
-    // ── 10. Extract raw text from Gemini response ─────────────────────────────
     const rawText = extractGeminiText(response);
 
-    if (!rawText) {
+    if (!rawText)
       return res.status(502).json({
         success: false,
         message: "AI returned an empty response. Please try again.",
       });
-    }
 
-    // ── 11. Robustly extract and parse JSON (strips code fences, slices to {...})
     let parsed;
     try {
       parsed = extractAndParseJSON(rawText);
     } catch (err) {
       console.error(
-        "[generateAIReport] extractAndParseJSON failed. Raw Gemini output:",
+        "[generateAIReport] extractAndParseJSON failed:",
         rawText,
-        "| Error:",
+        "|",
         err.message,
       );
       return res.status(422).json({
@@ -912,7 +891,8 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
       });
     }
 
-    // ── 12. Validate and sanitise all five required fields ───────────────────
+    // Step 7: validate all five fields before returning -
+    // better to return a clean error than a half-formed report that breaks the UI
     const score =
       typeof parsed.score === "number" &&
       parsed.score >= 1 &&
@@ -920,7 +900,7 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
         ? Math.round(parsed.score)
         : null;
 
-    // FIX: Renamed 'summary' to 'reportSummary' to avoid conflicting with the DB summary
+    // Using reportSummary as the variable name here to avoid shadowing the DB summary above
     const reportSummary =
       typeof parsed.summary === "string" && parsed.summary.trim().length > 0
         ? parsed.summary.trim()
@@ -936,21 +916,23 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
         ? parsed.praise.trim()
         : null;
 
-    // actionItems must be an array of 3 non-empty strings
     const actionItems =
       Array.isArray(parsed.actionItems) &&
       parsed.actionItems.length >= 3 &&
-      parsed.actionItems.every((i) => typeof i === "string" && i.trim().length > 0)
+      parsed.actionItems.every(
+        (i) => typeof i === "string" && i.trim().length > 0,
+      )
         ? parsed.actionItems.slice(0, 3).map((i) => i.trim())
         : null;
 
-    // If any required field is missing, reject cleanly rather than returning
-    // a half-formed report that confuses the frontend
     if (!score || !reportSummary || !roast || !praise || !actionItems) {
-      console.error(
-        "[generateAIReport] Incomplete parsed fields:",
-        { score, summary: !!reportSummary, roast: !!roast, praise: !!praise, actionItems: !!actionItems },
-      );
+      console.error("[generateAIReport] Incomplete fields:", {
+        score,
+        summary: !!reportSummary,
+        roast: !!roast,
+        praise: !!praise,
+        actionItems: !!actionItems,
+      });
       return res.status(422).json({
         success: false,
         message: "AI report was incomplete. Please try again.",
@@ -959,82 +941,63 @@ REQUIRED JSON STRUCTURE — return exactly these five keys, no more, no less:
 
     return res.status(200).json({
       success: true,
-      month:   monthLabel,
-      data:    { score, summary: reportSummary, roast, praise, actionItems },
+      month: monthLabel,
+      data: { score, summary: reportSummary, roast, praise, actionItems },
     });
   } catch (error) {
-    // Normalise status across @google/genai SDK error shapes
     const status =
       error?.status ?? error?.httpError?.status ?? error?.response?.status;
-    if (status === 400 || status === 403) {
+    if (status === 400 || status === 403)
       return res.status(502).json({
         success: false,
         message: "AI service configuration error. Please contact support.",
       });
-    }
-    if (status === 429 || status === 503 ) {
+    if (status === 429 || status === 503)
       return res.status(429).json({
         success: false,
         message: "AI service is busy. Please wait a moment and try again.",
       });
-    }
     next(error);
   }
 };
 
-// ─── POST /api/transactions/scan-receipt  (Sprint 3 — Gemini vision OCR) ────────
-/**
- * Accepts a receipt image upload (multipart/form-data, field: "receiptImage"),
- * passes it to Gemini 2.5 Flash as inline base64 data, and returns a structured
- * transaction object ready to auto-fill the TransactionForm.
- *
- * multer (configured in routes/transactions.js) places the file in memory and
- * attaches it to req.file before this controller runs:
- * req.file.buffer    — raw image bytes
- * req.file.mimetype  — e.g. "image/jpeg", "image/png", "image/webp"
- *
- * Request:  multipart/form-data with field "receiptImage" (≤ 5 MB)
- * Response:
- * {
- * success: true,
- * message: "Receipt scanned. Please verify the fields before saving.",
- * data: {
- * title:    "Groceries at Spar",   // max 5 words
- * amount:   1249.00,               // final total, number only
- * type:     "Expense",
- * category: "Food & Groceries",    // strict enum match
- * date:     "2025-06-14"           // YYYY-MM-DD, falls back to today
- * }
- * }
- */
+// --- @route   POST /api/transactions/scan-receipt ----------------------------
+// @desc    Upload a receipt image and extract transaction data via Gemini Vision
+// @access  Private
+//
+// multer (in routes/transactions.js) stores the file in memory and attaches it
+// to req.file before this runs:
+//   req.file.buffer   - raw image bytes
+//   req.file.mimetype - e.g. "image/jpeg"
+//
+// The image is converted to base64 and sent as inlineData - no disk writes.
+// Returns the extracted fields to pre-fill the form; doesn't save to DB.
 const parseReceiptImage = async (req, res, next) => {
   try {
-    // ── 1. Guard: multer must have attached a file ───────────────────────────
-    if (!req.file) {
+    // Guard: multer should have attached a file - if not, reject early
+    if (!req.file)
       return res.status(400).json({
         success: false,
         message:
           "No image received. Please attach a receipt photo (JPEG, PNG, or WEBP, max 5 MB).",
       });
-    }
 
-    // ── 2. Convert buffer → base64 ───────────────────────────────────────────
     const base64Image = req.file.buffer.toString("base64");
-    const mimeType    = req.file.mimetype; // e.g. "image/jpeg"
+    const mimeType = req.file.mimetype;
+    const todayISO = new Date().toISOString().split("T")[0];
 
-    // ── 3. Today's date for fallback resolution ──────────────────────────────
-    const todayISO = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
-
-    // ── 4. Strict Gemini system prompt ───────────────────────────────────────
+    // The prompt is very strict - it tells the model exactly what JSON shape to return
+    // and explicitly forbids markdown or surrounding text, since we parse the output directly
     const systemPrompt = `You are a receipt OCR parser for TrackWise, an Indian personal finance app. Your ONLY job is to extract structured transaction data from the receipt image and return it as a single valid JSON object.
 
 TODAY'S DATE: ${todayISO}
 
-EXTRACTION RULES — follow these exactly:
-1. "title": A concise merchant or item description in MAXIMUM 5 words. Capitalise the first word only. Use the store/merchant name if visible (e.g. "Spar grocery bill", "Swiggy food order"). Omit receipt numbers, addresses, and cashier names.
-2. "amount": The FINAL total amount paid, as a positive number ONLY — no currency symbols, no commas. Look for labels like "Total", "Grand Total", "Amount Due", "Net Payable", "Total Payable", or the largest amount at the bottom. If multiple totals appear, use the final payable amount (after taxes). If no amount is legible, return null.
-3. "type": MUST be exactly "Expense" for receipts (purchases, bills, restaurant tabs). Return "Income" ONLY if the image is clearly a payment receipt or salary slip credited to the user.
-4. "category": MUST be EXACTLY one of these strings (case-sensitive):
+EXTRACTION RULES - follow these exactly:
+1. "is_valid_receipt": Set this to true ONLY if the image is clearly a bill, invoice, receipt, or payment screenshot. If it is a random picture, diagram, selfie, or completely unrelated to finance, set this to false.
+2. "title": A concise merchant or item description in MAXIMUM 5 words. Capitalise the first word only. Use the store/merchant name if visible (e.g. "Spar grocery bill", "Swiggy food order"). Omit receipt numbers, addresses, and cashier names.
+3. "amount": The FINAL total amount paid, as a positive number ONLY - no currency symbols, no commas. Look for labels like "Total", "Grand Total", "Amount Due", "Net Payable", "Total Payable", or the largest amount at the bottom. If multiple totals appear, use the final payable amount (after taxes). If no amount is legible, return null.
+4. "type": MUST be exactly "Expense" for receipts (purchases, bills, restaurant tabs). Return "Income" ONLY if the image is clearly a payment receipt or salary slip credited to the user.
+5. "category": MUST be EXACTLY one of these strings (case-sensitive):
    - "Housing"          → rent receipts, home maintenance, furniture stores
    - "Food & Groceries" → supermarkets, grocery stores, restaurants, cafes, Swiggy, Zomato, food bills
    - "Transport"        → petrol pumps, fuel stations, Uber/Ola receipts, parking, toll, bus/train/metro tickets, flight boarding passes
@@ -1043,70 +1006,58 @@ EXTRACTION RULES — follow these exactly:
    - "Healthcare"       → pharmacy receipts, hospital bills, clinic receipts, lab test reports, gym membership
    - "Salary"           → salary slips, payroll credits, freelance payment receipts
    - "Other"            → anything that does not clearly fit the above categories
-5. "date": The transaction date from the receipt in YYYY-MM-DD format. Look for date fields labelled "Date", "Invoice Date", "Bill Date", or similar. If no date is visible or legible, use today: ${todayISO}.
+6. "date": The transaction date from the receipt in YYYY-MM-DD format. Look for date fields labelled "Date", "Invoice Date", "Bill Date", or similar. If no date is visible or legible, use today: ${todayISO}.
 
 CRITICAL RULES:
 - Return ONLY the JSON object. No markdown, no code fences, no explanation text before or after.
-- If the image is blurry, not a receipt, or completely illegible, still return the JSON with null for amount and "Other" for category, and use today's date.
+- If the image is blurry but still recognizable as a receipt, set is_valid_receipt to true, return null for amount, "Other" for category, and use today's date.
 - Never invent amounts. If the total is not clearly readable, return null for amount.
 - The "amount" must be a number (e.g. 1249.50), never a string.
 
-OUTPUT FORMAT — return exactly this JSON, nothing else:
-{"title":"string","amount":number_or_null,"type":"Expense_or_Income","category":"exact_enum_string","date":"YYYY-MM-DD"}`;
+OUTPUT FORMAT - return exactly this JSON, nothing else:
+{"is_valid_receipt":boolean,"title":"string","amount":number_or_null,"type":"Expense_or_Income","category":"exact_enum_string","date":"YYYY-MM-DD"}`;
 
-    // ── 5. Call Gemini 2.5 Flash with inlineData vision ──────────────────────
+    // Sending both a text instruction and the base64 image as parts -
+    // the text instruction keeps the prompt adjacent to the image in the context
     const model = getGenAI().models;
     const response = await model.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.1-flash-lite",
       contents: [
         {
           role: "user",
           parts: [
-            // Text prompt first — keeps the instruction adjacent to the image
             {
               text: "Extract the transaction details from this receipt image and return the JSON object as instructed.",
             },
-            // Base64 image as inlineData — the @google/genai SDK shape
-            {
-              inlineData: {
-                mimeType,
-                data: base64Image,
-              },
-            },
+            { inlineData: { mimeType, data: base64Image } },
           ],
         },
       ],
       config: {
         systemInstruction: systemPrompt,
-        temperature:      0.1,         // Low: we want deterministic extraction, not creativity
-        responseMimeType: "application/json", // Force JSON-mode output
-        // No maxOutputTokens — per Sprint 3 spec; the JSON is small enough
-        // that the model will always complete it within its natural limit
+        temperature: 0.1, // want deterministic extraction, not creativity
+        responseMimeType: "application/json", // tell Gemini to return JSON mode output
+        // No maxOutputTokens - the JSON is small enough that the model always completes it naturally
       },
     });
 
-    // ── 6. Extract raw text from Gemini response ─────────────────────────────
     const rawText = extractGeminiText(response);
 
-    if (!rawText) {
+    if (!rawText)
       return res.status(502).json({
         success: false,
         message:
           "AI returned an empty response. Please try again with a clearer image.",
       });
-    }
 
-    // ── 7. Route through the shared extractAndParseJSON utility ──────────────
-    //    This handles code fences, leading/trailing prose, and truncated JSON
-    //    exactly as parseQuickAdd and generateAIReport do.
     let parsed;
     try {
       parsed = extractAndParseJSON(rawText);
     } catch (err) {
       console.error(
-        "[parseReceiptImage] extractAndParseJSON failed. Raw Gemini output:",
+        "[parseReceiptImage] extractAndParseJSON failed:",
         rawText,
-        "| Error:",
+        "|",
         err.message,
       );
       return res.status(422).json({
@@ -1116,7 +1067,16 @@ OUTPUT FORMAT — return exactly this JSON, nothing else:
       });
     }
 
-    // ── 8. Validate and sanitise every field, apply safe fallbacks ───────────
+    // Block non-receipt images
+    if (parsed.is_valid_receipt === false) {
+      return res.status(422).json({
+        success: false,
+        message:
+          "This image does not appear to be a valid receipt or bill. Please upload a clear photo of a financial document.",
+      });
+    }
+
+    // Validate and sanitise - same pattern as parseQuickAdd
     const VALID_CATEGORIES = [
       "Housing",
       "Food & Groceries",
@@ -1128,31 +1088,26 @@ OUTPUT FORMAT — return exactly this JSON, nothing else:
       "Other",
     ];
 
-    // title — max 100 chars to match the Transaction schema, strip excess
     const title =
       typeof parsed.title === "string" && parsed.title.trim().length > 0
         ? parsed.title.trim().slice(0, 100)
         : null;
 
-    // amount — must be a positive finite number; null if unreadable
+    // Rounding to 2 decimal places (paise precision) so the form doesn't show floats like 1249.9999
     const amount =
       typeof parsed.amount === "number" &&
       isFinite(parsed.amount) &&
       parsed.amount > 0
-        ? Math.round(parsed.amount * 100) / 100  // round to 2 dp (paise)
+        ? Math.round(parsed.amount * 100) / 100
         : null;
 
-    // type — receipts are almost always Expense; Income only if explicitly returned
     const type = ["Income", "Expense"].includes(parsed.type)
       ? parsed.type
       : "Expense";
-
-    // category — must exactly match a schema enum; fall back to "Other"
     const category = VALID_CATEGORIES.includes(parsed.category)
       ? parsed.category
       : "Other";
 
-    // date — must be a real YYYY-MM-DD string; fall back to today
     const parsedDate = new Date(parsed.date);
     const date =
       parsed.date &&
@@ -1161,36 +1116,31 @@ OUTPUT FORMAT — return exactly this JSON, nothing else:
         ? parsed.date
         : todayISO;
 
-    // ── 9. Soft guard — surface a warning if even the amount is missing ──────
-    //    We still return 200 so the form can open pre-filled with what we got;
-    //    the user can enter the amount manually. A hard 422 here would be poor UX
-    //    for legitimately blurry images that still yield a useful title/category.
+    // If the amount is null we still return 200 and open the form pre-filled -
+    // a hard 422 here would be frustrating for blurry-but-otherwise-readable receipts
     const warning = !amount
-      ? "Amount could not be read from the receipt — please enter it manually."
+      ? "Amount could not be read from the receipt - please enter it manually."
       : undefined;
 
     return res.status(200).json({
       success: true,
-      message: warning || "Receipt scanned. Please verify the fields before saving.",
+      message:
+        warning || "Receipt scanned. Please verify the fields before saving.",
       data: { title, amount, type, category, date },
     });
   } catch (error) {
-    // Normalise status across @google/genai SDK error shapes (same pattern as
-    // parseQuickAdd and generateAIReport)
     const status =
       error?.status ?? error?.httpError?.status ?? error?.response?.status;
-    if (status === 400 || status === 403) {
+    if (status === 400 || status === 403)
       return res.status(502).json({
         success: false,
         message: "AI service configuration error. Please contact support.",
       });
-    }
-    if (status === 429 || status === 503) {
+    if (status === 429 || status === 503)
       return res.status(429).json({
         success: false,
         message: "AI service is busy. Please wait a moment and try again.",
       });
-    }
     next(error);
   }
 };

@@ -1,7 +1,7 @@
 {
   "name": "smart-expense-tracker-backend",
   "version": "2.0.0",
-  "description": "Backend API for Smart Personal Expense Tracker — MERN Stack (Phase A expanded)",
+  "description": "Backend API for Smart Personal Expense Tracker",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

@@ -1,89 +1,67 @@
 /**
- * main.jsx — React 18 Application Entry Point
+ * main.jsx - React app entry point
  *
- * This is the very first JavaScript file executed by Vite when the browser
- * loads the app. Its sole responsibility is to mount the root <App /> component
- * into the #root <div> defined in index.html.
+ * First file Vite executes when the browser loads the app.
+ * Mounts <App /> into the #root div defined in index.html.
  *
- * React 18 uses createRoot() instead of the legacy ReactDOM.render() —
- * this enables Concurrent Mode features like automatic batching, Suspense
- * improvements, and the useTransition hook.
+ * React 18's createRoot() unlocks Concurrent Mode - things like automatic
+ * batching of state updates and the useTransition hook. The old ReactDOM.render()
+ * is deprecated so this is the correct way to do it now.
  *
  * StrictMode:
- * Wrapping the app in <StrictMode> causes React to:
- * - Double-invoke certain lifecycle functions in development to surface
- * side effects in useEffect / useState initialisers
- * - Warn about deprecated API usage
- * - Detect unexpected state mutations
- * StrictMode renders are development-only — no impact on production builds.
+ *   Double-invokes effects and state initialisers in development to surface
+ *   bugs early (like a useEffect that doesn't clean up properly).
+ *   Has zero effect on production builds - nothing is actually run twice in prod.
+ *   It's the reason the keyframe injection helper in ToastContainer.jsx uses
+ *   an `injected` flag - without it, StrictMode would add the <style> tag twice.
  *
- * Global Unhandled Error Listeners:
- * The ErrorBoundary in App.jsx catches errors that occur during React rendering.
- * However, it cannot catch:
- * - Asynchronous errors (e.g., in setTimeout callbacks)
- * - Unhandled Promise rejections (e.g., a forgotten .catch())
- * We add window event listeners here to log those to the console in
- * development, preventing silent failures during the viva review.
+ * Global error listeners (dev only):
+ *   React's ErrorBoundary catches errors during rendering, but it can't catch
+ *   async errors or unhandled promise rejections. The two window listeners below
+ *   fill that gap and log them to the console so nothing fails silently
+ *   during development or a demo.
  *
  * MERN Data Flow starting point:
- * index.html → main.jsx → App.jsx → ThemeProvider → BrowserRouter
- * → AuthProvider (restores JWT session) → routes → pages → API calls
+ *   index.html → main.jsx → App.jsx → ThemeProvider → BrowserRouter
+ *   → AuthProvider (restores JWT session) → routes → pages → API calls
  */
 
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-
-// ✦ Phase 4 Auth Upgrade: Import the Google OAuth Provider
+import { StrictMode }   from 'react';
+import { createRoot }   from 'react-dom/client';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 
-// Global styles: Tailwind directives + CSS variables + component classes
+// Global styles: Tailwind directives, CSS variables, and component classes
 import './index.css';
-
 import App from './App.jsx';
 
-// ── Global async error logging (development only) ─────────────────────────────
-// These listeners catch errors that React's ErrorBoundary cannot intercept.
+// --- Dev-only async error logging --------------------------------------------
+// These catch the errors React's ErrorBoundary can't - async callbacks and
+// forgotten .catch() calls. Wrapped in DEV guard so they never ship to prod.
 if (import.meta.env.DEV) {
-  /**
-   * Catches uncaught synchronous errors thrown outside of React's render cycle
-   * (e.g., inside a vanilla JS setTimeout or an event listener attached
-   * directly to window).
-   */
+  // Catches errors thrown outside the React render cycle (e.g. in vanilla JS
+  // setTimeout callbacks or window event listeners)
   window.addEventListener('error', (event) => {
     console.error(
       '[TrackWise] Uncaught global error:',
       event.message,
       '\nSource:', event.filename,
-      '\nLine:', event.lineno
+      '\nLine:',   event.lineno
     );
   });
 
-  /**
-   * Catches unhandled Promise rejections — the most common source of
-   * silent failures in async/await code where .catch() is omitted.
-   *
-   * Example that this catches:
-   * axios.get('/api/some-route'); // Missing await AND missing .catch()
-   */
+  // Catches unhandled Promise rejections - the most common source of silent
+  // failures when you forget to await something or omit a .catch()
   window.addEventListener('unhandledrejection', (event) => {
-    console.error(
-      '[TrackWise] Unhandled Promise rejection:',
-      event.reason
-    );
+    console.error('[TrackWise] Unhandled Promise rejection:', event.reason);
   });
 }
 
-// ── Mount React application ───────────────────────────────────────────────────
-/**
- * document.getElementById('root') targets the <div id="root"> in index.html.
- * createRoot() prepares the DOM node for React 18's concurrent rendering.
- * .render() kicks off the component tree: App → providers → router → pages.
- */
+// --- Mount --------------------------------------------------------------------
 const rootElement = document.getElementById('root');
 
+// Defensive guard - gives a clear error message if index.html is misconfigured
+// instead of a cryptic "Cannot read properties of null" crash
 if (!rootElement) {
-  // Safety guard — should never happen, but gives a clear message if index.html
-  // is misconfigured (e.g., the #root div was accidentally renamed).
   throw new Error(
     '[TrackWise] Could not find #root element in index.html. ' +
     'Make sure <div id="root"></div> exists in the <body>.'
@@ -92,7 +70,8 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    {/* ✦ Phase 4 Auth Upgrade: Wrap the entire app to enable Google Sign-In */}
+    {/* GoogleOAuthProvider must wrap the entire app so the Google Sign-In
+        button in LoginPage and RegisterPage can read the client ID */}
     <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID}>
       <App />
     </GoogleOAuthProvider>
