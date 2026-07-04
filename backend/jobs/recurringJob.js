@@ -69,11 +69,10 @@ const isDueToday = (lastGeneratedAt, frequency) => {
     case "Weekly":
       return daysDiff >= 7;
     case "Monthly":
-      // Due if we're in a different month or year from when it was last generated
-      return (
-        now.getMonth() !== last.getMonth() ||
-        now.getFullYear() !== last.getFullYear()
-      );
+      // add 1 exact month to the last generated date
+      const nextDue = new Date(lastMidnight);
+      nextDue.setMonth(nextDue.getMonth() + 1);
+      return todayMidnight >= nextDue;
     default:
       return false;
   }

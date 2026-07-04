@@ -174,8 +174,7 @@ const LoginPage = () => {
                 Signing in with Google…
               </div>
             ) : (
-              /* The [&>div]:w-full hack forces the Google iframe to stretch full width */
-              <div className="flex justify-center w-full [&>div]:w-full [&_iframe]:!w-full">
+              <div className="flex justify-center w-full">
                 <GoogleLogin
                   onSuccess={handleGoogleSuccess}
                   onError={handleGoogleError}
@@ -184,6 +183,7 @@ const LoginPage = () => {
                   shape="pill"
                   size="large"
                   text="signin_with"
+                  width="340"
                 />
               </div>
             )}

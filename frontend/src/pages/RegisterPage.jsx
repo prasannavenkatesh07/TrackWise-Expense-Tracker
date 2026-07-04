@@ -223,7 +223,7 @@ const RegisterPage = () => {
             ) : (
               /* The [&>div]:w-full hack forces the Google iframe to stretch full width -
                  the component renders an iframe internally which ignores normal CSS width */
-              <div className="flex justify-center w-full [&>div]:w-full [&_iframe]:!w-full">
+              <div className="flex justify-center w-full">
                 <GoogleLogin
                   onSuccess={handleGoogleSuccess}
                   onError={handleGoogleError}
@@ -232,6 +232,7 @@ const RegisterPage = () => {
                   shape="pill"
                   size="large"
                   text="signup_with"
+                  width="340"
                 />
               </div>
             )}

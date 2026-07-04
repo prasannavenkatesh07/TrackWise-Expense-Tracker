@@ -104,7 +104,7 @@ const AppLoadingScreen = () => (
       <div className="w-14 h-14 rounded-2xl bg-slate-900 dark:bg-slate-700 flex items-center justify-center shadow-lg">
         <span className="text-emerald-400 text-2xl font-bold font-mono">₹</span>
       </div>
-      <div className="absolute inset-0 rounded-2xl border-2 border-emerald-500 border-t-transparent animate-spin" />
+      <div className="absolute inset-0 rounded-2xl border-2 border-emerald-100 dark:border-slate-800 border-t-emerald-500 animate-spin" />
     </div>
     <p className="text-sm font-medium text-slate-400 dark:text-slate-500 animate-pulse-soft">
       Loading TrackWise…
