@@ -232,7 +232,7 @@ const RegisterPage = () => {
                   shape="pill"
                   size="large"
                   text="signup_with"
-                  width="340"
+                  width="300"
                 />
               </div>
             )}

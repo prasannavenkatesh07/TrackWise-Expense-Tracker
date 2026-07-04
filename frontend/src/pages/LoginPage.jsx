@@ -183,7 +183,7 @@ const LoginPage = () => {
                   shape="pill"
                   size="large"
                   text="signin_with"
-                  width="340"
+                  width="300"
                 />
               </div>
             )}
