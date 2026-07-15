@@ -17,7 +17,7 @@ TrackWise uses Gemini 3.1 Flash Lite to handle the categorization, parsing, and 
 
 ---
 
-[🚀 Live Demo](https://use-trackwise.vercel.app/) · [🏗️ Architecture](#architecture) · [🎬 Demo Video](#) · [🛠️ Tech Stack](#tech-stack) · [📖 Docs](#local-development)
+[🚀 Live Demo](https://use-trackwise.vercel.app/) · [🏗️ Architecture](#architecture) · [🎬 Demo Video](https://www.linkedin.com/posts/prasannavenkatesh-s_buildinpublic-fullstack-mern-activity-7483116802378465280-DgaB) · [🛠️ Tech Stack](#tech-stack) · [📖 Docs](#local-development)
 
 </div>
 
